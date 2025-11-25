@@ -159,125 +159,62 @@ export default function AudioTranscriber() {
 
   // --- 5. The UI ---
   return (
-    <div className="min-h-screen bg-gradient-to-b from-gray-50 to-white flex flex-col items-center py-10 font-sans">
-      <div className="w-full max-w-3xl px-6">
-        <header className="flex items-center justify-between mb-6">
+    <div className="app">
+      <div className="container">
+        <header className="app-header">
           <div>
-            <h1 className="text-3xl font-extrabold text-gray-900">
-              Whisper — Live Transcription
-            </h1>
-            <p className="text-sm text-gray-500">
-              Local, privacy-first speech to text
-            </p>
+            <h1 className="title">Whisper — Live Transcription</h1>
+            <p className="subtitle">Local, privacy-first speech to text</p>
           </div>
 
-          <div className="flex items-center gap-3">
-            <div className="text-right">
-              <div className="text-xs text-gray-500">Model status</div>
-              <div className="flex items-center gap-2">
-                <span
-                  className={`h-3 w-3 rounded-full ${
-                    status === "ready"
-                      ? "bg-green-400"
-                      : status === "loading"
-                      ? "bg-yellow-400"
-                      : "bg-gray-300"
-                  }`}
-                ></span>
-                <span className="text-sm text-gray-700 capitalize">
-                  {status || "idle"}
-                </span>
-              </div>
+          <div className="model-status">
+            <div className="label">Model status</div>
+            <div className="status-row">
+              <span className={`status-dot ${status || "idle"}`} aria-hidden="true"></span>
+              <span className="status-text">{status || "idle"}</span>
             </div>
           </div>
         </header>
 
-        <main className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {/* Transcript column */}
-          <div className="md:col-span-2 bg-white rounded-2xl shadow p-6 min-h-[320px] flex flex-col">
-            <div
-              className="flex-1 overflow-auto"
-              ref={transcriptElRef}
-              aria-live="polite"
-            >
+        <main className="app-main">
+          <section className="transcript">
+            <div className="transcript-body" ref={transcriptElRef} aria-live="polite">
               {transcription ? (
-                <div className="prose max-w-none text-gray-800 leading-relaxed">
-                  {transcription}
-                </div>
+                <div className="transcript-text">{transcription}</div>
               ) : (
-                <div className="text-gray-400 italic">
-                  Your live transcription will appear here.
-                </div>
+                <div className="empty">Your live transcription will appear here.</div>
               )}
 
               {partial && (
-                <div className="mt-3 text-sm text-gray-500">
-                  Partial: <span className="text-gray-700">{partial}</span>
-                </div>
+                <div className="partial">Partial: <span>{partial}</span></div>
               )}
             </div>
 
-            <div className="mt-4 flex items-center justify-between">
-              <div className="text-sm text-gray-500">
-                {status === "processing"
-                  ? "Finalizing..."
-                  : status === "recording"
-                  ? "Listening"
-                  : "Ready"}
-              </div>
+            <div className="transcript-footer">
+              <div className="muted">{status === "processing" ? "Finalizing..." : status === "recording" ? "Listening" : "Ready"}</div>
 
-              <div className="flex gap-3">
-                <button
-                  onClick={copyToClipboard}
-                  className="px-4 py-2 bg-white border rounded-lg text-sm text-gray-700"
-                >
-                  Copy
-                </button>
-                <button
-                  onClick={clearText}
-                  className="px-4 py-2 bg-white border rounded-lg text-sm text-red-500"
-                >
-                  Clear
-                </button>
+              <div className="actions">
+                <button onClick={copyToClipboard} className="btn">Copy</button>
+                <button onClick={clearText} className="btn btn-danger">Clear</button>
               </div>
             </div>
-          </div>
+          </section>
 
-          {/* Controls column */}
-          <aside className="bg-white rounded-2xl shadow p-6 flex flex-col items-center">
-            <div className="mb-4">
-              <div className="text-sm text-gray-500">Recording</div>
-              <div className="mt-2">
+          <aside className="controls-panel">
+            <div className="record-section">
+              <div className="muted">Recording</div>
+              <div className="record-action">
                 {status === "recording" ? (
-                  <button
-                    onClick={stopRecording}
-                    className="w-24 h-24 bg-red-500 rounded-full shadow-lg flex items-center justify-center text-white"
-                  >
-                    Stop
-                  </button>
+                  <button onClick={stopRecording} className="record-btn recording">Stop</button>
                 ) : (
-                  <button
-                    onClick={startRecording}
-                    disabled={status === "loading" || status === "processing"}
-                    className="w-24 h-24 bg-blue-600 hover:bg-blue-700 rounded-full shadow-lg flex items-center justify-center text-white"
-                  >
-                    Record
-                  </button>
+                  <button onClick={startRecording} disabled={status === "loading" || status === "processing"} className="record-btn">Record</button>
                 )}
               </div>
             </div>
 
-            <div className="w-full mt-3">
-              {status === "loading" && (
-                <div className="text-sm text-yellow-600">
-                  Downloading model... {progress}%
-                </div>
-              )}
-              {status === "processing" && (
-                <div className="text-sm text-blue-600">
-                  Processing final audio...
-                </div>
-              )}
+            <div className="status-message">
+              {status === "loading" && <div className="muted">Downloading model... {progress}%</div>}
+              {status === "processing" && <div className="muted">Processing final audio...</div>}
             </div>
           </aside>
         </main>
