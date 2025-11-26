@@ -14,35 +14,6 @@ const MODELS = [
   },
 ];
 
-// Resample audio to 16kHz (required by Whisper)
-function resampleAudio(audioBuffer, targetSampleRate = 16000) {
-  const sourceSampleRate = audioBuffer.sampleRate;
-  const sourceData = audioBuffer.getChannelData(0);
-
-  if (sourceSampleRate === targetSampleRate) {
-    return sourceData;
-  }
-
-  const sampleRateRatio = sourceSampleRate / targetSampleRate;
-  const newLength = Math.round(sourceData.length / sampleRateRatio);
-  const result = new Float32Array(newLength);
-
-  for (let i = 0; i < newLength; i++) {
-    const sourceIndex = i * sampleRateRatio;
-    const index = Math.floor(sourceIndex);
-    const fraction = sourceIndex - index;
-
-    if (index + 1 < sourceData.length) {
-      result[i] =
-        sourceData[index] * (1 - fraction) + sourceData[index + 1] * fraction;
-    } else {
-      result[i] = sourceData[index];
-    }
-  }
-
-  return result;
-}
-
 export default function AudioTranscriber() {
   // --- State ---
   const [status, setStatus] = useState("loading");
@@ -205,88 +176,17 @@ export default function AudioTranscriber() {
     }
 
     try {
-      console.log(
-        "[Transcription] Converting blob to audio via AudioContext..."
-      );
-      const arrayBuffer = await blob.arrayBuffer();
-      console.log(
-        "[Transcription] ArrayBuffer size:",
-        arrayBuffer.byteLength,
-        "bytes"
-      );
-
-      const audioContext = new (window.AudioContext ||
-        window.webkitAudioContext)();
-      let decodedAudio;
-
-      try {
-        decodedAudio = await audioContext.decodeAudioData(arrayBuffer);
-        console.log(
-          "[Transcription] Audio decoded. Duration:",
-          decodedAudio.duration,
-          "seconds. Sample rate:",
-          decodedAudio.sampleRate
-        );
-      } catch (decodeError) {
-        console.error("[Transcription] Audio decode error:", decodeError);
-        setTranscription("(Audio format not supported)");
-        return;
-      }
-
-      // Check if audio is too short
-      if (decodedAudio.duration < 0.1) {
-        console.warn(
-          "[Transcription] Audio too short:",
-          decodedAudio.duration,
-          "seconds"
-        );
-        setTranscription("(Recording too short - hold longer)");
-        return;
-      }
-
-      // Resample to 16kHz (required by Whisper)
-      const resampledAudio = resampleAudio(decodedAudio, 16000);
-      console.log(
-        "[Transcription] Audio resampled to 16kHz, length:",
-        resampledAudio.length
-      );
-
-      // Calculate RMS to detect silence
-      let sum = 0;
-      for (let i = 0; i < resampledAudio.length; i++) {
-        sum += resampledAudio[i] * resampledAudio[i];
-      }
-      const rms = Math.sqrt(sum / resampledAudio.length);
-      console.log(
-        "[Transcription] Audio RMS (energy level):",
-        rms.toFixed(6),
-        "(>0.01 indicates speech)"
-      );
-
-      if (rms < 0.001) {
-        console.warn(
-          "[Transcription] Audio appears to be silent (RMS too low)."
-        );
-        setTranscription("(No audio detected - check microphone)");
-        return;
-      }
+      console.log("[Transcription] Creating audio URL from blob...");
+      const audioUrl = URL.createObjectURL(blob);
+      console.log("[Transcription] Audio URL created:", audioUrl);
 
       const prompt = `Capture physical therapy exercises, sets, and reps. For example: theraband external rotation four sets twelve reps. kettle bell squats three sets ten reps. active assistive extension three sets fifteen reps.`;
 
-      console.log("[Transcription] Calling pipeline with resampled audio...");
-      console.log("[Transcription] Audio data type:", typeof resampledAudio);
-      console.log(
-        "[Transcription] Audio is Float32Array:",
-        resampledAudio instanceof Float32Array
-      );
-      console.log(
-        "[Transcription] First 10 samples:",
-        Array.from(resampledAudio.slice(0, 10))
-      );
+      console.log("[Transcription] Calling pipeline with audio URL...");
 
       let output;
       try {
-        output = await transcriberRef.current(resampledAudio, {
+        output = await transcriberRef.current(audioUrl, {
           chunk_length_s: 30,
           stride_length_s: 5,
           language: "english",
@@ -298,8 +198,13 @@ export default function AudioTranscriber() {
         console.error("[Transcription] Pipeline error:", pipelineError);
         console.error("[Transcription] Error stack:", pipelineError.stack);
         setTranscription("(Pipeline error: " + pipelineError.message + ")");
+        // Clean up the URL
+        URL.revokeObjectURL(audioUrl);
         return;
       }
+
+      // Clean up the URL after transcription
+      URL.revokeObjectURL(audioUrl);
 
       console.log(
         "[Transcription] Pipeline call succeeded. Full output:",
