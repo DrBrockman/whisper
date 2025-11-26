@@ -210,6 +210,10 @@ h1 {
   color: var(--danger);
   font-weight: 600;
   backdrop-filter: blur(4px);
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
 }
 .wave {
   width: 3px;
