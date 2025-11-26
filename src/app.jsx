@@ -106,11 +106,9 @@ export default function AudioTranscriber() {
         }
       };
 
-      // Use a timeslice to get periodic data for real-time transcription
-      mediaRecorderRef.current.start(1000);
+      // Start recording without timeslice (simpler, avoids partial audio issues)
+      mediaRecorderRef.current.start();
       setStatus("recording");
-
-      intervalRef.current = setInterval(processRealtimeAudio, 2000);
     } catch (err) {
       console.error(err);
       alert("Microphone access denied or not supported.");
@@ -122,19 +120,16 @@ export default function AudioTranscriber() {
       mediaRecorderRef.current &&
       mediaRecorderRef.current.state !== "inactive"
     ) {
-      clearInterval(intervalRef.current);
       setStatus("processing");
 
-      // **FIX APPLIED HERE:** Use the 'onstop' event for a more reliable final pass.
-      // This avoids race conditions and ensures all audio chunks are processed.
       mediaRecorderRef.current.onstop = async () => {
         // Stop the microphone stream
         if (streamRef.current) {
           streamRef.current.getTracks().forEach((track) => track.stop());
         }
 
-        // Perform one final, high-quality transcription pass
-        await processRealtimeAudio(true);
+        // Transcribe the complete recording
+        await transcribeAudio();
         setStatus("ready");
 
         // Clean up the event listener
@@ -149,8 +144,8 @@ export default function AudioTranscriber() {
   };
 
   // --- 3. Transcription Logic ---
-  const processRealtimeAudio = async (isFinal = false) => {
-    if (!transcriberRef.current || (isBusyRef.current && !isFinal)) return;
+  const transcribeAudio = async () => {
+    if (!transcriberRef.current) return;
     if (audioChunksRef.current.length === 0) return;
 
     isBusyRef.current = true;
@@ -162,7 +157,6 @@ export default function AudioTranscriber() {
         "audio/webm";
       const blob = new Blob(audioChunksRef.current, { type: recordedType });
 
-      // **IMPROVEMENT APPLIED HERE:** Use a more effective, example-based prompt
       const prompt = `Capture physical therapy exercises, sets, and reps. For example: theraband external rotation four sets twelve reps. kettle bell squats three sets ten reps. active assistive extension three sets fifteen reps.`;
 
       const commonOptions = {
