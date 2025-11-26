@@ -251,7 +251,8 @@ h1 {
   box-sizing: border-box;
 }
 
-.btn, .btn * {
+.btn,
+.btn * {
   -webkit-user-select: none;
   -moz-user-select: none;
   -ms-user-select: none;
