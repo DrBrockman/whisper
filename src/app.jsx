@@ -33,6 +33,7 @@ export default function AudioTranscriber() {
   useEffect(() => {
     const loadModel = async () => {
       const myToken = ++loadTokenRef.current;
+      console.log("[Model] Loading model, token:", myToken);
       setStatus("loading");
       setProgress(0);
       transcriberRef.current = null;
@@ -41,14 +42,17 @@ export default function AudioTranscriber() {
         const modelId =
           MODELS.find((m) => m.id === selectedModel)?.modelId ||
           "Xenova/whisper-tiny.en";
+        console.log("[Model] Model ID:", modelId);
 
         const progress_callback = (data) => {
           if (loadTokenRef.current !== myToken) return;
           if (data.status === "progress") {
+            console.log("[Model] Loading progress:", Math.round(data.progress) + "%");
             setProgress(Math.round(data.progress));
           }
         };
 
+        console.log("[Model] Creating pipeline...");
         const pipelineInstance = await pipeline(
           "automatic-speech-recognition",
           modelId,
@@ -56,12 +60,15 @@ export default function AudioTranscriber() {
         );
 
         if (loadTokenRef.current === myToken) {
+          console.log("[Model] Pipeline loaded successfully, token:", myToken);
           transcriberRef.current = pipelineInstance;
           setStatus("ready");
+        } else {
+          console.log("[Model] Pipeline loaded but token mismatch (stale load)");
         }
       } catch (err) {
         if (loadTokenRef.current === myToken) {
-          console.error("Model loading error:", err);
+          console.error("[Model] Model loading error:", err);
           setStatus("error");
         }
       }
@@ -146,28 +153,6 @@ export default function AudioTranscriber() {
     }
 
     try {
-      // **FIX:** Convert the audio blob into the format the model expects.
-      // 1. Read the blob as an ArrayBuffer.
-      console.log("[Transcription] Converting blob to ArrayBuffer...");
-      const arrayBuffer = await blob.arrayBuffer();
-      console.log("[Transcription] ArrayBuffer size:", arrayBuffer.byteLength, "bytes");
-
-      // 2. Create an AudioContext to decode and resample the audio.
-      //    The Whisper model expects a 16000Hz sample rate.
-      console.log("[Transcription] Creating AudioContext with 16000Hz sample rate...");
-      const audioContext = new AudioContext({
-        sampleRate: 16000,
-      });
-
-      // 3. Decode the audio data from the ArrayBuffer.
-      console.log("[Transcription] Decoding audio data...");
-      const decodedAudio = await audioContext.decodeAudioData(arrayBuffer);
-      console.log("[Transcription] Audio decoded. Duration:", decodedAudio.duration, "seconds");
-
-      // 4. Get the raw audio data (Float32Array) from the first channel.
-      const audio = decodedAudio.getChannelData(0);
-      console.log("[Transcription] Extracted audio channel, length:", audio.length);
-
       const prompt = `Capture physical therapy exercises, sets, and reps. For example: theraband external rotation four sets twelve reps. kettle bell squats three sets ten reps. active assistive extension three sets fifteen reps.`;
       const commonOptions = {
         chunk_length_s: 30,
@@ -178,10 +163,39 @@ export default function AudioTranscriber() {
         initial_prompt: prompt,
       };
 
-      // 5. Pass the processed audio data to the pipeline.
-      console.log("[Transcription] Calling pipeline with audio data...");
-      const output = await transcriberRef.current(audio, commonOptions);
-      console.log("[Transcription] Pipeline result:", output);
+      let output;
+
+      // Try 1: Pass the blob directly
+      try {
+        console.log("[Transcription] Attempt 1: Passing blob directly to pipeline...");
+        output = await transcriberRef.current(blob, commonOptions);
+        console.log("[Transcription] Attempt 1 succeeded. Result:", output);
+      } catch (err1) {
+        console.warn("[Transcription] Attempt 1 failed:", err1.message);
+
+        // Try 2: Convert blob to ArrayBuffer and use AudioContext
+        try {
+          console.log("[Transcription] Attempt 2: Converting blob to audio data via AudioContext...");
+          const arrayBuffer = await blob.arrayBuffer();
+          console.log("[Transcription] ArrayBuffer size:", arrayBuffer.byteLength, "bytes");
+
+          const audioContext = new AudioContext({
+            sampleRate: 16000,
+          });
+
+          const decodedAudio = await audioContext.decodeAudioData(arrayBuffer);
+          console.log("[Transcription] Audio decoded. Duration:", decodedAudio.duration, "seconds");
+
+          const audio = decodedAudio.getChannelData(0);
+          console.log("[Transcription] Extracted audio channel, length:", audio.length);
+
+          output = await transcriberRef.current(audio, commonOptions);
+          console.log("[Transcription] Attempt 2 succeeded. Result:", output);
+        } catch (err2) {
+          console.error("[Transcription] Attempt 2 also failed:", err2.message);
+          throw err2;
+        }
+      }
 
       if (output && output.text) {
         console.log("[Transcription] Transcription text received:", output.text);
@@ -190,7 +204,7 @@ export default function AudioTranscriber() {
         console.warn("[Transcription] Pipeline output missing or no text:", output);
       }
     } catch (error) {
-      console.error("[Transcription] Error:", error);
+      console.error("[Transcription] Fatal error:", error);
     }
   };
 
