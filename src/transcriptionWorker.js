@@ -161,10 +161,25 @@ self.addEventListener("message", async (event) => {
     if (msg.audioUrl && typeof msg.audioUrl === "string") {
       audioInput = msg.audioUrl;
     } else if (msg.audio) {
-      // Could be transferred ArrayBuffer or a typed array
+      // Could be transferred ArrayBuffer (WAV) or a typed array
       const payload = msg.audio;
       if (payload instanceof ArrayBuffer) {
-        audioInput = new Float32Array(payload);
+        // Detect WAV by 'RIFF' header
+        try {
+          const header = new Uint8Array(payload, 0, 4);
+          const headerStr = String.fromCharCode.apply(null, header);
+          if (headerStr === 'RIFF') {
+            // Create a blob URL for the WAV and pass to pipeline
+            const wavBlob = new Blob([payload], { type: msg.mime || 'audio/wav' });
+            audioInput = URL.createObjectURL(wavBlob);
+          } else {
+            // Treat as raw Float32 ArrayBuffer
+            audioInput = new Float32Array(payload);
+          }
+        } catch (e) {
+          // Fallback to Float32Array
+          audioInput = new Float32Array(payload);
+        }
       } else if (ArrayBuffer.isView(payload)) {
         audioInput = payload;
       } else {
