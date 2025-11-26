@@ -84,7 +84,8 @@ export default function AudioTranscriber() {
         } else {
           // stale load: dispose if possible (best-effort)
           try {
-            if (pipelineInstance && pipelineInstance.destroy) pipelineInstance.destroy();
+            if (pipelineInstance && pipelineInstance.destroy)
+              pipelineInstance.destroy();
           } catch (e) {
             // ignore
           }
@@ -177,12 +178,22 @@ export default function AudioTranscriber() {
     isBusyRef.current = true;
 
     try {
-      // Create a single blob from all chunks so far
-      const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
-      const url = URL.createObjectURL(blob);
+      // Create a single blob from all chunks so far. Prefer the recorded
+      // chunk MIME type when available; don't force a type that may be
+      // incorrect for the browser/codec combination.
+      const recordedType =
+        (audioChunksRef.current[0] && audioChunksRef.current[0].type) ||
+        (mediaRecorderRef.current && mediaRecorderRef.current.mimeType) ||
+        "audio/webm";
+      const blob = new Blob(audioChunksRef.current, { type: recordedType });
 
-      // Run the model
-      const output = await transcriberRef.current(url, {
+      // Try passing the Blob directly to the pipeline. Some browsers
+      // produce blobs that the pipeline can consume directly. If that
+      // fails with an encoding/decoding error, fall back to passing an
+      // ArrayBuffer obtained from the blob.
+      let output;
+      try {
+        output = await transcriberRef.current(blob, {
         chunk_length_s: 30, // Whisper works best with 30s chunks
         stride_length_s: 5,
         language: "english",
@@ -190,15 +201,37 @@ export default function AudioTranscriber() {
         return_timestamps: false, // Set true if you want word timings
         initial_prompt: `The following is a physical therapy documentation session. Terminology: ${PT_VOCABULARY}`,
       });
-
+      } catch (err) {
+        // If this looks like an audio decode/encoding problem, try an
+        // ArrayBuffer fallback which some backends accept better.
+        const isEncodingError =
+          err && (err.name === "EncodingError" || /decode/i.test(err.message));
+        if (isEncodingError) {
+          try {
+            const arrayBuffer = await blob.arrayBuffer();
+            output = await transcriberRef.current(arrayBuffer, {
+              chunk_length_s: 30,
+              stride_length_s: 5,
+              language: "english",
+              task: "transcribe",
+              return_timestamps: false,
+              initial_prompt: `The following is a physical therapy documentation session. Terminology: ${PT_VOCABULARY}`,
+            });
+          } catch (err2) {
+            // rethrow the original error if fallback also fails
+            throw err;
+          }
+        } else {
+          throw err;
+        }
+      }
       // Update the text with the latest result.
       // Note: We replace the whole text because Whisper may have auto-corrected
       // previous words based on new context.
       if (output && output.text) {
         setTranscription(output.text);
       }
-
-      URL.revokeObjectURL(url);
+      
     } catch (error) {
       console.error("Transcription error", error);
     } finally {
