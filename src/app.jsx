@@ -1,83 +1,86 @@
 import React, { useState, useRef, useEffect } from "react";
-import { pipeline, env } from "@xenova/transformers";
 
-// Configuration
-env.allowLocalModels = false;
-env.useBrowserCache = true;
+// Initialize Web Worker for transcription
+let transcriptionWorker = null;
+let messageCounter = 0;
 
-// Define the models available for selection
-const MODELS = [
-  {
-    id: "whisper-tiny",
-    name: "Whisper Tiny (Fast)",
-    modelId: "Xenova/whisper-tiny.en",
-  },
-];
+const getTranscriptionWorker = () => {
+  if (transcriptionWorker === null) {
+    transcriptionWorker = new Worker(
+      new URL("./transcriptionWorker.js", import.meta.url),
+      { type: "module" }
+    );
+  }
+  return transcriptionWorker;
+};
 
 export default function AudioTranscriber() {
   // --- State ---
-  const [status, setStatus] = useState("loading");
+  const [status, setStatus] = useState("ready");
   const [transcription, setTranscription] = useState("");
-  const [progress, setProgress] = useState(0);
-  const [selectedModel, setSelectedModel] = useState("whisper-tiny");
 
   // --- Refs ---
-  const transcriberRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const pointerActiveRef = useRef(false);
-  const loadTokenRef = useRef(0);
+  const pendingTranscriptionRef = useRef(new Map());
 
-  // --- 1. Load Model ---
+  // --- Worker Message Handler ---
   useEffect(() => {
-    const loadModel = async () => {
-      const myToken = ++loadTokenRef.current;
-      console.log("[Model] Loading model, token:", myToken);
-      setStatus("loading");
-      setProgress(0);
-      transcriberRef.current = null;
+    const worker = getTranscriptionWorker();
 
-      try {
-        const modelId =
-          MODELS.find((m) => m.id === selectedModel)?.modelId ||
-          "Xenova/whisper-tiny.en";
-        console.log("[Model] Model ID:", modelId);
+    const handleWorkerMessage = (event) => {
+      const { type, messageId, text, error, progress } = event.data;
 
-        const progress_callback = (data) => {
-          if (loadTokenRef.current !== myToken) return;
-          if (data.status === "progress") {
-            console.log(
-              "[Model] Loading progress:",
-              Math.round(data.progress) + "%"
-            );
-            setProgress(Math.round(data.progress));
-          }
-        };
-
-        console.log("[Model] Creating pipeline...");
-        const pipelineInstance = await pipeline(
-          "automatic-speech-recognition",
-          modelId,
-          { progress_callback }
-        );
-
-        if (loadTokenRef.current === myToken) {
-          console.log("[Model] Pipeline loaded successfully, token:", myToken);
-          transcriberRef.current = pipelineInstance;
-          setStatus("ready");
+      if (type === "complete") {
+        console.log("[App] Transcription complete from worker");
+        if (text && text.trim().length > 0) {
+          setTranscription(text);
         } else {
-          console.log(
-            "[Model] Pipeline loaded but token mismatch (stale load)"
-          );
+          setTranscription("No speech detected.");
         }
-      } catch (err) {
-        if (loadTokenRef.current === myToken) {
-          console.error("[Model] Model loading error:", err);
-          setStatus("error");
-        }
+        pendingTranscriptionRef.current.delete(messageId);
+        setStatus("ready");
+      } else if (type === "error") {
+        console.error("[App] Worker error:", error);
+        setTranscription("Transcription failed: " + error);
+        pendingTranscriptionRef.current.delete(messageId);
+        setStatus("ready");
+      } else if (type === "progress") {
+        console.log("[App] Transcription progress:", progress);
       }
     };
-    loadModel();
-  }, [selectedModel]);
+
+    worker.addEventListener("message", handleWorkerMessage);
+    return () => worker.removeEventListener("message", handleWorkerMessage);
+  }, []);
+
+  // --- Helper: resample audio to target sample rate (linear interpolation) ---
+  function resampleAudio(audioBuffer, targetSampleRate = 16000) {
+    const sourceSampleRate = audioBuffer.sampleRate;
+    const sourceData = audioBuffer.getChannelData(0);
+
+    if (sourceSampleRate === targetSampleRate) {
+      return new Float32Array(sourceData);
+    }
+
+    const sampleRateRatio = sourceSampleRate / targetSampleRate;
+    const newLength = Math.round(sourceData.length / sampleRateRatio);
+    const result = new Float32Array(newLength);
+
+    for (let i = 0; i < newLength; i++) {
+      const sourceIndex = i * sampleRateRatio;
+      const index = Math.floor(sourceIndex);
+      const fraction = sourceIndex - index;
+
+      if (index + 1 < sourceData.length) {
+        result[i] = sourceData[index] * (1 - fraction) + sourceData[index + 1] * fraction;
+      } else {
+        result[i] = sourceData[index];
+      }
+    }
+
+    return result;
+  }
 
   // --- 2. Recording Logic ---
   const startRecording = async () => {
@@ -163,39 +166,48 @@ export default function AudioTranscriber() {
     }
   };
 
-  // --- 3. Transcription Logic ---
+  // --- 3. Transcription Logic (Web Worker) ---
   const transcribeAudio = async (audioBlob) => {
-    console.log("[Transcription] Starting transcription...");
-
-    if (!transcriberRef.current) {
-      console.error("[Transcription] Transcription model is not loaded yet.");
-      setTranscription("Transcription model is not loaded yet.");
-      return;
-    }
-
+    console.log("[App] Starting transcription with Web Worker...");
     setTranscription("Transcribing...");
+    setStatus("processing");
 
     try {
-      const audioUrl = URL.createObjectURL(audioBlob);
-      console.log("[Transcription] Audio URL created, calling transcriber...");
+      // Convert blob -> ArrayBuffer -> AudioBuffer -> Float32Array (mono)
+      const arrayBuffer = await audioBlob.arrayBuffer();
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const decoded = await audioContext.decodeAudioData(arrayBuffer);
+      console.log("[App] Decoded audio. Duration:", decoded.duration, "s, sampleRate:", decoded.sampleRate);
 
-      const output = await transcriberRef.current(audioUrl);
+      // Resample to 16kHz for Whisper
+      const float32 = resampleAudio(decoded, 16000);
+      console.log("[App] Resampled audio length:", float32.length);
 
-      console.log("[Transcription] Output received:", output);
+      const messageId = ++messageCounter;
+      // Send the Float32Array buffer as transferable to avoid copy
+      const worker = getTranscriptionWorker();
+      worker.postMessage(
+        {
+          audio: float32,
+          messageId,
+          model: "Xenova/whisper-tiny.en",
+          quantized: false,
+          multilingual: false,
+          subtask: "transcribe",
+          language: "english",
+          chunk_length_s: 30,
+          stride_length_s: 5,
+        },
+        [float32.buffer]
+      );
 
-      // Clean up the URL
-      URL.revokeObjectURL(audioUrl);
-
-      if (output && output.text) {
-        console.log("[Transcription] Text:", output.text);
-        setTranscription(output.text);
-      } else {
-        console.warn("[Transcription] No text in output");
-        setTranscription("No speech detected.");
-      }
+      // Track pending so we can cleanup if needed
+      pendingTranscriptionRef.current.set(messageId, { sent: true });
+      console.log("[App] Message sent to worker (transferable). messageId:", messageId);
     } catch (error) {
-      console.error("[Transcription] Transcription failed:", error);
-      setTranscription("Transcription failed: " + error.message);
+      console.error("[App] Transcription setup error:", error);
+      setTranscription("Error: " + error.message);
+      setStatus("ready");
     }
   };
 
@@ -232,11 +244,17 @@ export default function AudioTranscriber() {
     <div className="app-container">
       <div className="card">
         <header className="header">
-          <div className="header-content"></div>
+          <div className="header-content">
+            <h1>Audio Transcriber</h1>
+          </div>
           <div className="header-controls">
             <div className={`status-badge ${status}`}>
               <span className="dot"></span>
-              {status === "loading" ? `Loading (${progress}%)` : status}
+              {status === "processing"
+                ? "Processing..."
+                : status === "recording"
+                ? "Recording..."
+                : "Ready"}
             </div>
           </div>
         </header>
@@ -246,10 +264,10 @@ export default function AudioTranscriber() {
             <p className="transcript-text">{transcription}</p>
           ) : (
             <div className="placeholder">
-              {status === "loading"
-                ? "Initializing AI model..."
+              {status === "processing"
+                ? "Transcribing audio..."
                 : status === "error"
-                ? "Error loading model. Please refresh."
+                ? "Error transcribing. Please try again."
                 : "Press and hold the button to start speaking."}
             </div>
           )}
