@@ -2,8 +2,6 @@ import React, { useState, useRef, useEffect } from "react";
 import { pipeline, env } from "@xenova/transformers";
 
 // Configuration
-// It's often best to disable the browser cache during development to ensure you're
-// testing with a fresh model. Remember to re-enable it for production.
 env.allowLocalModels = false;
 env.useBrowserCache = true;
 
@@ -16,9 +14,38 @@ const MODELS = [
   },
 ];
 
+// Resample audio to 16kHz (required by Whisper)
+function resampleAudio(audioBuffer, targetSampleRate = 16000) {
+  const sourceSampleRate = audioBuffer.sampleRate;
+  const sourceData = audioBuffer.getChannelData(0);
+
+  if (sourceSampleRate === targetSampleRate) {
+    return sourceData;
+  }
+
+  const sampleRateRatio = sourceSampleRate / targetSampleRate;
+  const newLength = Math.round(sourceData.length / sampleRateRatio);
+  const result = new Float32Array(newLength);
+
+  for (let i = 0; i < newLength; i++) {
+    const sourceIndex = i * sampleRateRatio;
+    const index = Math.floor(sourceIndex);
+    const fraction = sourceIndex - index;
+
+    if (index + 1 < sourceData.length) {
+      result[i] =
+        sourceData[index] * (1 - fraction) + sourceData[index + 1] * fraction;
+    } else {
+      result[i] = sourceData[index];
+    }
+  }
+
+  return result;
+}
+
 export default function AudioTranscriber() {
   // --- State ---
-  const [status, setStatus] = useState("loading"); // 'loading', 'ready', 'recording', 'processing', 'error'
+  const [status, setStatus] = useState("loading");
   const [transcription, setTranscription] = useState("");
   const [progress, setProgress] = useState(0);
   const [selectedModel, setSelectedModel] = useState("whisper-tiny");
@@ -26,8 +53,8 @@ export default function AudioTranscriber() {
   // --- Refs ---
   const transcriberRef = useRef(null);
   const mediaRecorderRef = useRef(null);
-  const pointerActiveRef = useRef(false); // track press-and-hold state
-  const loadTokenRef = useRef(0); // prevent race when switching models
+  const pointerActiveRef = useRef(false);
+  const loadTokenRef = useRef(0);
 
   // --- 1. Load Model ---
   useEffect(() => {
@@ -47,7 +74,10 @@ export default function AudioTranscriber() {
         const progress_callback = (data) => {
           if (loadTokenRef.current !== myToken) return;
           if (data.status === "progress") {
-            console.log("[Model] Loading progress:", Math.round(data.progress) + "%");
+            console.log(
+              "[Model] Loading progress:",
+              Math.round(data.progress) + "%"
+            );
             setProgress(Math.round(data.progress));
           }
         };
@@ -64,7 +94,9 @@ export default function AudioTranscriber() {
           transcriberRef.current = pipelineInstance;
           setStatus("ready");
         } else {
-          console.log("[Model] Pipeline loaded but token mismatch (stale load)");
+          console.log(
+            "[Model] Pipeline loaded but token mismatch (stale load)"
+          );
         }
       } catch (err) {
         if (loadTokenRef.current === myToken) {
@@ -80,7 +112,7 @@ export default function AudioTranscriber() {
   const startRecording = async () => {
     console.log("[Recording] Starting recording...");
     setStatus("recording");
-    setTranscription(""); // Clear previous transcription
+    setTranscription("");
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -88,20 +120,29 @@ export default function AudioTranscriber() {
 
       const recorder = new MediaRecorder(stream);
       mediaRecorderRef.current = recorder;
-      console.log("[Recording] MediaRecorder created, MIME type:", recorder.mimeType);
+      console.log(
+        "[Recording] MediaRecorder created, MIME type:",
+        recorder.mimeType
+      );
 
       const audioChunks = [];
 
       recorder.ondataavailable = (e) => {
-        console.log("[Recording] Data available, chunk size:", e.data.size, "bytes");
+        console.log(
+          "[Recording] Data available, chunk size:",
+          e.data.size,
+          "bytes"
+        );
         if (e.data.size > 0) {
           audioChunks.push(e.data);
         }
       };
 
       recorder.onstop = async () => {
-        console.log("[Recording] Stop event fired. Total audio chunks:", audioChunks.length);
-        // Stop the microphone track to turn off the browser's recording indicator.
+        console.log(
+          "[Recording] Stop event fired. Total audio chunks:",
+          audioChunks.length
+        );
         stream.getTracks().forEach((track) => track.stop());
 
         if (audioChunks.length === 0) {
@@ -111,7 +152,9 @@ export default function AudioTranscriber() {
         }
 
         setStatus("processing");
-        console.log("[Recording] Status set to processing. Calling transcribeAudio...");
+        console.log(
+          "[Recording] Status set to processing. Calling transcribeAudio..."
+        );
 
         const recordedType = audioChunks[0].type || "audio/webm";
         console.log("[Recording] Blob MIME type:", recordedType);
@@ -132,7 +175,10 @@ export default function AudioTranscriber() {
   };
 
   const stopRecording = () => {
-    console.log("[Recording] Stop requested. Recorder state:", mediaRecorderRef.current?.state);
+    console.log(
+      "[Recording] Stop requested. Recorder state:",
+      mediaRecorderRef.current?.state
+    );
     if (
       mediaRecorderRef.current &&
       mediaRecorderRef.current.state === "recording"
@@ -140,86 +186,108 @@ export default function AudioTranscriber() {
       console.log("[Recording] Calling recorder.stop()");
       mediaRecorderRef.current.stop();
     } else {
-      console.warn("[Recording] Stop called but recorder is not in recording state");
+      console.warn(
+        "[Recording] Stop called but recorder is not in recording state"
+      );
     }
   };
 
-  // --- 3. Transcription Logic (FIX APPLIED) ---
+  // --- 3. Transcription Logic (FIXED) ---
   const transcribeAudio = async (blob) => {
-    console.log("[Transcription] Starting transcription. Transcriberref exists:", !!transcriberRef.current);
+    console.log(
+      "[Transcription] Starting transcription. Transcriberref exists:",
+      !!transcriberRef.current
+    );
     if (!transcriberRef.current) {
       console.error("[Transcription] No transcriberRef.current available!");
       return;
     }
 
     try {
+      console.log(
+        "[Transcription] Converting blob to audio via AudioContext..."
+      );
+      const arrayBuffer = await blob.arrayBuffer();
+      console.log(
+        "[Transcription] ArrayBuffer size:",
+        arrayBuffer.byteLength,
+        "bytes"
+      );
+
+      const audioContext = new (window.AudioContext ||
+        window.webkitAudioContext)();
+      const decodedAudio = await audioContext.decodeAudioData(arrayBuffer);
+      console.log(
+        "[Transcription] Audio decoded. Duration:",
+        decodedAudio.duration,
+        "seconds. Sample rate:",
+        decodedAudio.sampleRate
+      );
+
+      // Resample to 16kHz (required by Whisper)
+      const resampledAudio = resampleAudio(decodedAudio, 16000);
+      console.log(
+        "[Transcription] Audio resampled to 16kHz, length:",
+        resampledAudio.length
+      );
+
+      // Calculate RMS to detect silence
+      let sum = 0;
+      for (let i = 0; i < resampledAudio.length; i++) {
+        sum += resampledAudio[i] * resampledAudio[i];
+      }
+      const rms = Math.sqrt(sum / resampledAudio.length);
+      console.log(
+        "[Transcription] Audio RMS (energy level):",
+        rms.toFixed(6),
+        "(>0.01 indicates speech)"
+      );
+
+      if (rms < 0.001) {
+        console.warn(
+          "[Transcription] Audio appears to be silent (RMS too low)."
+        );
+        setTranscription("(No audio detected)");
+        return;
+      }
+
       const prompt = `Capture physical therapy exercises, sets, and reps. For example: theraband external rotation four sets twelve reps. kettle bell squats three sets ten reps. active assistive extension three sets fifteen reps.`;
-      const commonOptions = {
+
+      console.log("[Transcription] Calling pipeline with resampled audio...");
+      const output = await transcriberRef.current(resampledAudio, {
         chunk_length_s: 30,
         stride_length_s: 5,
         language: "english",
         task: "transcribe",
         return_timestamps: false,
         initial_prompt: prompt,
-      };
+      });
 
-      let output;
-      let audioToProcess;
+      console.log(
+        "[Transcription] Pipeline call succeeded. Full output:",
+        output
+      );
 
-      // Always convert blob to Float32Array for consistent processing
-      try {
-        console.log("[Transcription] Converting blob to audio via AudioContext...");
-        const arrayBuffer = await blob.arrayBuffer();
-        console.log("[Transcription] ArrayBuffer size:", arrayBuffer.byteLength, "bytes");
+      if (output && output.text) {
+        const text = output.text.trim();
+        console.log("[Transcription] Transcription text received:", text);
 
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        const decodedAudio = await audioContext.decodeAudioData(arrayBuffer);
-        console.log("[Transcription] Audio decoded. Duration:", decodedAudio.duration, "seconds. Sample rate:", decodedAudio.sampleRate);
-
-        // Get the audio channel and check for silence
-        audioToProcess = decodedAudio.getChannelData(0);
-        console.log("[Transcription] Extracted audio channel, length:", audioToProcess.length);
-
-        // Calculate RMS (Root Mean Square) to detect if audio has content
-        let sum = 0;
-        for (let i = 0; i < audioToProcess.length; i++) {
-          sum += audioToProcess[i] * audioToProcess[i];
+        if (text.length > 0) {
+          setTranscription(text);
+        } else {
+          console.warn("[Transcription] Empty transcription text");
+          setTranscription("(No speech detected)");
         }
-        const rms = Math.sqrt(sum / audioToProcess.length);
-        console.log("[Transcription] Audio RMS (energy level):", rms.toFixed(6), "(>0.01 indicates speech)");
-
-        if (rms < 0.001) {
-          console.warn("[Transcription] Audio appears to be silent (RMS too low). Result will likely be empty.");
-        }
-      } catch (err) {
-        console.warn("[Transcription] AudioContext conversion failed:", err.message);
-        console.log("[Transcription] Falling back to blob pass-through...");
-        audioToProcess = blob;
-      }
-
-      try {
-        console.log("[Transcription] Calling pipeline with audio...");
-        output = await transcriberRef.current(audioToProcess, commonOptions);
-        console.log("[Transcription] Pipeline call succeeded. Result:", output);
-      } catch (err) {
-        console.error("[Transcription] Pipeline call failed:", err.message);
-        throw err;
-      }
-
-      if (output && output.text && output.text.trim().length > 0) {
-        console.log("[Transcription] Transcription text received:", output.text);
-        setTranscription(output.text);
-      } else if (output && output.text === "") {
-        console.warn("[Transcription] Pipeline returned empty text. Audio may be silent or inaudible.");
-        setTranscription("");
-        setStatus("ready");
       } else {
-        console.warn("[Transcription] Pipeline output missing or invalid:", output);
-        setStatus("ready");
+        console.warn(
+          "[Transcription] Pipeline output missing text field:",
+          output
+        );
+        setTranscription("(Transcription failed)");
       }
     } catch (error) {
       console.error("[Transcription] Fatal error:", error);
-      setStatus("ready");
+      setTranscription("(Error: " + error.message + ")");
     }
   };
 
@@ -243,7 +311,6 @@ export default function AudioTranscriber() {
   };
 
   useEffect(() => {
-    // Add global event listeners to handle releasing the pointer outside the button.
     window.addEventListener("pointerup", handlePointerUp);
     window.addEventListener("pointercancel", handlePointerUp);
 
@@ -251,7 +318,7 @@ export default function AudioTranscriber() {
       window.removeEventListener("pointerup", handlePointerUp);
       window.removeEventListener("pointercancel", handlePointerUp);
     };
-  }, [status]); // Re-bind if status changes to ensure we have the correct context.
+  }, [status]);
 
   return (
     <div className="app-container">
@@ -345,6 +412,7 @@ const MicIcon = () => (
     <line x1="8" y1="23" x2="16" y2="23"></line>
   </svg>
 );
+
 const CopyIcon = () => (
   <svg
     width="20"
@@ -360,6 +428,7 @@ const CopyIcon = () => (
     <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
   </svg>
 );
+
 const TrashIcon = () => (
   <svg
     width="20"
