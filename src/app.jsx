@@ -11,6 +11,29 @@ const getTranscriptionWorker = () => {
       { type: "module" }
     );
   }
+
+  // Convert an audio Blob to a Float32Array resampled to 16k using OfflineAudioContext
+  async function convertAudioToFloat32(audioBlob) {
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const arrayBuffer = await audioBlob.arrayBuffer();
+    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+    // We need to resample to 16000Hz for Whisper
+    const targetSampleRate = 16000;
+    const offlineCtx = new OfflineAudioContext(1, Math.ceil(audioBuffer.duration * targetSampleRate), targetSampleRate);
+
+    // Create a buffer source for the offline context
+    const source = offlineCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(offlineCtx.destination);
+    source.start();
+
+    // Render the audio at 16k
+    const resampledBuffer = await offlineCtx.startRendering();
+
+    // Return the Float32Array data from the first channel
+    return resampledBuffer.getChannelData(0);
+  }
   return transcriptionWorker;
 };
 
@@ -105,7 +128,9 @@ export default function AudioTranscriber() {
     // Ping the worker to ensure it's alive and responsive
     const pingId = "ping-" + Date.now();
     const pingTimeout = setTimeout(() => {
-      console.warn("[App] Worker did not reply to ping within 5s. Worker may be busy or failed to initialize.");
+      console.warn(
+        "[App] Worker did not reply to ping within 5s. Worker may be busy or failed to initialize."
+      );
     }, 5000);
 
     // Store timeout ref so handler can clear it on pong
@@ -165,18 +190,26 @@ export default function AudioTranscriber() {
     const buffer = new ArrayBuffer(44 + samples.length * 2);
     const view = new DataView(buffer);
 
-    /* RIFF identifier */ writeString(view, 0, 'RIFF');
+    /* RIFF identifier */ writeString(view, 0, "RIFF");
     /* file length */ view.setUint32(4, 36 + samples.length * 2, true);
-    /* RIFF type */ writeString(view, 8, 'WAVE');
-    /* format chunk identifier */ writeString(view, 12, 'fmt ');
+    /* RIFF type */ writeString(view, 8, "WAVE");
+    /* format chunk identifier */ writeString(view, 12, "fmt ");
     /* format chunk length */ view.setUint32(16, 16, true);
     /* sample format (raw) */ view.setUint16(20, 1, true);
     /* channel count */ view.setUint16(22, 1, true);
     /* sample rate */ view.setUint32(24, sampleRate, true);
-    /* byte rate (sampleRate * blockAlign) */ view.setUint32(28, sampleRate * 2, true);
-    /* block align (channelCount * bytesPerSample) */ view.setUint16(32, 2, true);
+    /* byte rate (sampleRate * blockAlign) */ view.setUint32(
+      28,
+      sampleRate * 2,
+      true
+    );
+    /* block align (channelCount * bytesPerSample) */ view.setUint16(
+      32,
+      2,
+      true
+    );
     /* bits per sample */ view.setUint16(34, 16, true);
-    /* data chunk identifier */ writeString(view, 36, 'data');
+    /* data chunk identifier */ writeString(view, 36, "data");
     /* data chunk length */ view.setUint32(40, samples.length * 2, true);
 
     // PCM16 conversion
@@ -286,32 +319,20 @@ export default function AudioTranscriber() {
     setStatus("processing");
 
     try {
-      // Convert blob -> ArrayBuffer -> AudioBuffer -> Float32Array (mono)
-      const arrayBuffer = await audioBlob.arrayBuffer();
-      const audioContext = new (window.AudioContext ||
-        window.webkitAudioContext)();
-      const decoded = await audioContext.decodeAudioData(arrayBuffer);
-      console.log(
-        "[App] Decoded audio. Duration:",
-        decoded.duration,
-        "s, sampleRate:",
-        decoded.sampleRate
-      );
-
-      // Resample to 16kHz for Whisper
-      const float32 = resampleAudio(decoded, 16000);
-      console.log("[App] Resampled audio length:", float32.length);
-
-      // Encode to WAV PCM16 to ensure consistent audio format
-      const wavBuffer = encodeWAV(float32, 16000);
+      // Convert blob -> Float32Array resampled to 16kHz using OfflineAudioContext
+      const float32 = await convertAudioToFloat32(audioBlob);
+      const sampleRate = 16000;
+      console.log("[App] Converted audio to Float32 length:", float32.length);
 
       const messageId = ++messageCounter;
       const worker = getTranscriptionWorker();
 
-      // Send WAV ArrayBuffer as transferable
+      // Send raw Float32 ArrayBuffer as transferable along with sampleRate
+      const audioBuffer = float32.buffer;
       worker.postMessage(
         {
-          audio: wavBuffer,
+          audio: audioBuffer,
+          sampleRate,
           messageId,
           model: "Xenova/whisper-tiny.en",
           quantized: false,
@@ -320,14 +341,16 @@ export default function AudioTranscriber() {
           language: "english",
           chunk_length_s: 30,
           stride_length_s: 5,
-          mime: "audio/wav",
         },
-        [wavBuffer]
+        [audioBuffer]
       );
 
       // Track pending so we can cleanup if needed
       pendingTranscriptionRef.current.set(messageId, { sent: true });
-      console.log("[App] Message sent to worker (wav transferable). messageId:", messageId);
+      console.log(
+        "[App] Message sent to worker (wav transferable). messageId:",
+        messageId
+      );
     } catch (error) {
       console.error("[App] Transcription setup error:", error);
       setTranscription("Error: " + error.message);

@@ -57,7 +57,10 @@ async function createOrGetPipeline(
       self.postMessage({ status: "ready", model: modelId });
     } catch (e) {
       console.error("[Worker] Pipeline initialization error:", e);
-      self.postMessage({ status: "error", data: { message: "Pipeline init failed: " + e.message } });
+      self.postMessage({
+        status: "error",
+        data: { message: "Pipeline init failed: " + e.message },
+      });
       throw e;
     }
   }
@@ -164,30 +167,73 @@ self.addEventListener("message", async (event) => {
       // Could be transferred ArrayBuffer (WAV) or a typed array
       const payload = msg.audio;
       if (payload instanceof ArrayBuffer) {
-        // Detect WAV by 'RIFF' header
+        // Detect WAV by 'RIFF' header and parse PCM16 -> Float32 if present
         try {
-          const header = new Uint8Array(payload, 0, 4);
-          const headerStr = String.fromCharCode.apply(null, header);
+          const headerBytes = new Uint8Array(payload, 0, 12);
+          const headerStr = String.fromCharCode.apply(null, headerBytes.subarray(0, 4));
           if (headerStr === 'RIFF') {
-            // Create a blob URL for the WAV and pass to pipeline
-            const wavBlob = new Blob([payload], { type: msg.mime || 'audio/wav' });
-            audioInput = URL.createObjectURL(wavBlob);
+            const view = new DataView(payload);
+            // sampleRate is at byte offset 24 in little-endian for standard WAV fmt with PCM
+            const sampleRate = view.getUint32(24, true);
+
+            // Locate 'data' chunk (start at offset 12)
+            let dataOffset = 12;
+            let dataSize = 0;
+            while (dataOffset + 8 <= view.byteLength) {
+              const chunkId = String.fromCharCode(
+                view.getUint8(dataOffset),
+                view.getUint8(dataOffset + 1),
+                view.getUint8(dataOffset + 2),
+                view.getUint8(dataOffset + 3)
+              );
+              const chunkSize = view.getUint32(dataOffset + 4, true);
+              if (chunkId === 'data') {
+                dataOffset += 8; // point to data bytes
+                dataSize = chunkSize;
+                break;
+              }
+              dataOffset += 8 + chunkSize;
+            }
+
+            if (dataSize === 0) {
+              throw new Error('WAV data chunk not found');
+            }
+
+            // Assume 16-bit PCM
+            const numSamples = dataSize / 2; // 2 bytes per sample
+            const float32 = new Float32Array(numSamples);
+            let srcOffset = dataOffset;
+            for (let i = 0; i < numSamples; i++) {
+              const int16 = view.getInt16(srcOffset, true);
+              float32[i] = int16 < 0 ? int16 / 32768 : int16 / 32767;
+              srcOffset += 2;
+            }
+
+            // Provide object with samples and sampleRate so pipeline/processor can use
+            audioInput = { samples: float32, sampleRate };
           } else {
-            // Treat as raw Float32 ArrayBuffer
-            audioInput = new Float32Array(payload);
+            // Treat as raw Float32 ArrayBuffer. If sender included sampleRate, pass as object.
+            const samples = new Float32Array(payload);
+            if (msg && msg.sampleRate) {
+              audioInput = { samples, sampleRate: msg.sampleRate };
+            } else {
+              audioInput = samples;
+            }
           }
         } catch (e) {
-          // Fallback to Float32Array
+          // Fallback to Float32Array view
           audioInput = new Float32Array(payload);
         }
       } else if (ArrayBuffer.isView(payload)) {
+        // Already a typed array (e.g., Float32Array)
         audioInput = payload;
+      } else if (payload instanceof Blob) {
+        // Blob (e.g., if main thread sent a Blob) - create URL for pipeline if needed
+        audioInput = URL.createObjectURL(payload);
       } else {
-        // Unexpected form
-        throw new Error("Unsupported audio payload format");
+        // Unknown form - passthrough
+        audioInput = payload;
       }
-    } else {
-      throw new Error("No audio provided to worker");
     }
 
     // Call pipeline with callbacks for streaming updates
