@@ -2,6 +2,8 @@ import React, { useState, useRef, useEffect } from "react";
 import { pipeline, env } from "@xenova/transformers";
 
 // Configuration
+// It's often best to disable the browser cache during development to ensure you're
+// testing with a fresh model. Remember to re-enable it for production.
 env.allowLocalModels = false;
 env.useBrowserCache = true;
 
@@ -75,8 +77,6 @@ export default function AudioTranscriber() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-      // **FIX APPLIED:** Create a new MediaRecorder instance for each recording session.
-      // This is more stable across browsers.
       const recorder = new MediaRecorder(stream);
       mediaRecorderRef.current = recorder;
 
@@ -88,8 +88,6 @@ export default function AudioTranscriber() {
         }
       };
 
-      // **FIX APPLIED:** All transcription logic is now safely inside the `onstop` handler.
-      // This guarantees that it runs *after* the final `ondataavailable` event.
       recorder.onstop = async () => {
         // Stop the microphone track to turn off the browser's recording indicator.
         stream.getTracks().forEach((track) => track.stop());
@@ -118,8 +116,6 @@ export default function AudioTranscriber() {
   };
 
   const stopRecording = () => {
-    // If the recorder exists and is currently recording, stop it.
-    // This will trigger the `onstop` event handler where the transcription happens.
     if (
       mediaRecorderRef.current &&
       mediaRecorderRef.current.state === "recording"
@@ -128,11 +124,27 @@ export default function AudioTranscriber() {
     }
   };
 
-  // --- 3. Transcription Logic ---
+  // --- 3. Transcription Logic (FIX APPLIED) ---
   const transcribeAudio = async (blob) => {
     if (!transcriberRef.current) return;
 
     try {
+      // **FIX:** Convert the audio blob into the format the model expects.
+      // 1. Read the blob as an ArrayBuffer.
+      const arrayBuffer = await blob.arrayBuffer();
+
+      // 2. Create an AudioContext to decode and resample the audio.
+      //    The Whisper model expects a 16000Hz sample rate.
+      const audioContext = new AudioContext({
+        sampleRate: 16000,
+      });
+
+      // 3. Decode the audio data from the ArrayBuffer.
+      const decodedAudio = await audioContext.decodeAudioData(arrayBuffer);
+
+      // 4. Get the raw audio data (Float32Array) from the first channel.
+      const audio = decodedAudio.getChannelData(0);
+
       const prompt = `Capture physical therapy exercises, sets, and reps. For example: theraband external rotation four sets twelve reps. kettle bell squats three sets ten reps. active assistive extension three sets fifteen reps.`;
       const commonOptions = {
         chunk_length_s: 30,
@@ -143,9 +155,8 @@ export default function AudioTranscriber() {
         initial_prompt: prompt,
       };
 
-      // Use an ArrayBuffer as it's often more reliable.
-      const arrayBuffer = await blob.arrayBuffer();
-      const output = await transcriberRef.current(arrayBuffer, commonOptions);
+      // 5. Pass the processed audio data to the pipeline.
+      const output = await transcriberRef.current(audio, commonOptions);
 
       if (output && output.text) {
         setTranscription(output.text);
@@ -175,7 +186,7 @@ export default function AudioTranscriber() {
   };
 
   useEffect(() => {
-    // Add global event listeners for pointer up to handle cases where the user releases the mouse outside the button.
+    // Add global event listeners to handle releasing the pointer outside the button.
     window.addEventListener("pointerup", handlePointerUp);
     window.addEventListener("pointercancel", handlePointerUp);
 
@@ -271,11 +282,10 @@ const MicIcon = () => (
     strokeLinecap="round"
     strokeLinejoin="round"
   >
-    {" "}
-    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>{" "}
-    <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>{" "}
-    <line x1="12" y1="19" x2="12" y2="23"></line>{" "}
-    <line x1="8" y1="23" x2="16" y2="23"></line>{" "}
+    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+    <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+    <line x1="12" y1="19" x2="12" y2="23"></line>
+    <line x1="8" y1="23" x2="16" y2="23"></line>
   </svg>
 );
 const CopyIcon = () => (
@@ -289,9 +299,8 @@ const CopyIcon = () => (
     strokeLinecap="round"
     strokeLinejoin="round"
   >
-    {" "}
-    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>{" "}
-    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>{" "}
+    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
   </svg>
 );
 const TrashIcon = () => (
@@ -305,8 +314,7 @@ const TrashIcon = () => (
     strokeLinecap="round"
     strokeLinejoin="round"
   >
-    {" "}
-    <polyline points="3 6 5 6 21 6"></polyline>{" "}
-    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>{" "}
+    <polyline points="3 6 5 6 21 6"></polyline>
+    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
   </svg>
 );
