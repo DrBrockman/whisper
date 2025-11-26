@@ -12,16 +12,6 @@ const MODELS = [
     name: "Whisper Tiny (Fast)",
     modelId: "Xenova/whisper-tiny.en",
   },
-  {
-    id: "medical-v1",
-    name: "Medical v1 (Specialized)",
-    modelId: "Crystalcareai/Whisper-Medicalv1",
-  },
-  {
-    id: "lite-large",
-    name: "Lite Whisper Large v3 (Accurate)",
-    modelId: "onnx-community/lite-whisper-large-v3-turbo-fast-ONNX",
-  },
 ];
 
 export default function AudioTranscriber() {
