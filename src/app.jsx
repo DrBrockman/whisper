@@ -163,75 +163,39 @@ export default function AudioTranscriber() {
     }
   };
 
-  // --- 3. Transcription Logic (FIXED) ---
-  const transcribeAudio = async (blob) => {
-    console.log(
-      "[Transcription] Starting transcription. Transcriberref exists:",
-      !!transcriberRef.current
-    );
+  // --- 3. Transcription Logic ---
+  const transcribeAudio = async (audioBlob) => {
+    console.log("[Transcription] Starting transcription...");
+
     if (!transcriberRef.current) {
-      console.error("[Transcription] No transcriberRef.current available!");
-      setTranscription("(Model not loaded)");
+      console.error("[Transcription] Transcription model is not loaded yet.");
+      setTranscription("Transcription model is not loaded yet.");
       return;
     }
 
+    setTranscription("Transcribing...");
+
     try {
-      console.log("[Transcription] Creating audio URL from blob...");
-      const audioUrl = URL.createObjectURL(blob);
-      console.log("[Transcription] Audio URL created:", audioUrl);
+      const audioUrl = URL.createObjectURL(audioBlob);
+      console.log("[Transcription] Audio URL created, calling transcriber...");
 
-      const prompt = `Capture physical therapy exercises, sets, and reps. For example: theraband external rotation four sets twelve reps. kettle bell squats three sets ten reps. active assistive extension three sets fifteen reps.`;
+      const output = await transcriberRef.current(audioUrl);
 
-      console.log("[Transcription] Calling pipeline with audio URL...");
+      console.log("[Transcription] Output received:", output);
 
-      let output;
-      try {
-        output = await transcriberRef.current(audioUrl, {
-          chunk_length_s: 30,
-          stride_length_s: 5,
-          language: "english",
-          task: "transcribe",
-          return_timestamps: false,
-          initial_prompt: prompt,
-        });
-      } catch (pipelineError) {
-        console.error("[Transcription] Pipeline error:", pipelineError);
-        console.error("[Transcription] Error stack:", pipelineError.stack);
-        setTranscription("(Pipeline error: " + pipelineError.message + ")");
-        // Clean up the URL
-        URL.revokeObjectURL(audioUrl);
-        return;
-      }
-
-      // Clean up the URL after transcription
+      // Clean up the URL
       URL.revokeObjectURL(audioUrl);
 
-      console.log(
-        "[Transcription] Pipeline call succeeded. Full output:",
-        JSON.stringify(output, null, 2)
-      );
-
-      if (output && typeof output.text !== "undefined") {
-        const text = output.text.trim();
-        console.log("[Transcription] Transcription text received:", text);
-
-        if (text.length > 0) {
-          setTranscription(text);
-        } else {
-          console.warn("[Transcription] Empty transcription text");
-          setTranscription("(No speech detected)");
-        }
+      if (output && output.text) {
+        console.log("[Transcription] Text:", output.text);
+        setTranscription(output.text);
       } else {
-        console.warn(
-          "[Transcription] Pipeline output missing text field. Output:",
-          output
-        );
-        setTranscription("(Unexpected output format)");
+        console.warn("[Transcription] No text in output");
+        setTranscription("No speech detected.");
       }
     } catch (error) {
-      console.error("[Transcription] Fatal error:", error);
-      console.error("[Transcription] Error stack:", error.stack);
-      setTranscription("(Error: " + error.message + ")");
+      console.error("[Transcription] Transcription failed:", error);
+      setTranscription("Transcription failed: " + error.message);
     }
   };
 
