@@ -71,79 +71,102 @@ export default function AudioTranscriber() {
 
   // --- 2. Recording Logic ---
   const startRecording = async () => {
+    console.log("[Recording] Starting recording...");
     setStatus("recording");
     setTranscription(""); // Clear previous transcription
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      console.log("[Recording] Microphone access granted");
 
       const recorder = new MediaRecorder(stream);
       mediaRecorderRef.current = recorder;
+      console.log("[Recording] MediaRecorder created, MIME type:", recorder.mimeType);
 
       const audioChunks = [];
 
       recorder.ondataavailable = (e) => {
+        console.log("[Recording] Data available, chunk size:", e.data.size, "bytes");
         if (e.data.size > 0) {
           audioChunks.push(e.data);
         }
       };
 
       recorder.onstop = async () => {
+        console.log("[Recording] Stop event fired. Total audio chunks:", audioChunks.length);
         // Stop the microphone track to turn off the browser's recording indicator.
         stream.getTracks().forEach((track) => track.stop());
 
         if (audioChunks.length === 0) {
-          console.warn("No audio data recorded.");
+          console.warn("[Recording] No audio data recorded.");
           setStatus("ready");
           return;
         }
 
         setStatus("processing");
+        console.log("[Recording] Status set to processing. Calling transcribeAudio...");
 
         const recordedType = audioChunks[0].type || "audio/webm";
+        console.log("[Recording] Blob MIME type:", recordedType);
         const blob = new Blob(audioChunks, { type: recordedType });
+        console.log("[Recording] Blob created, size:", blob.size, "bytes");
 
         await transcribeAudio(blob);
         setStatus("ready");
       };
 
       recorder.start();
+      console.log("[Recording] Recording started.");
     } catch (err) {
-      console.error("Microphone access error:", err);
+      console.error("[Recording] Microphone access error:", err);
       alert("Microphone access denied or not supported.");
       setStatus("ready");
     }
   };
 
   const stopRecording = () => {
+    console.log("[Recording] Stop requested. Recorder state:", mediaRecorderRef.current?.state);
     if (
       mediaRecorderRef.current &&
       mediaRecorderRef.current.state === "recording"
     ) {
+      console.log("[Recording] Calling recorder.stop()");
       mediaRecorderRef.current.stop();
+    } else {
+      console.warn("[Recording] Stop called but recorder is not in recording state");
     }
   };
 
   // --- 3. Transcription Logic (FIX APPLIED) ---
   const transcribeAudio = async (blob) => {
-    if (!transcriberRef.current) return;
+    console.log("[Transcription] Starting transcription. Transcriberref exists:", !!transcriberRef.current);
+    if (!transcriberRef.current) {
+      console.error("[Transcription] No transcriberRef.current available!");
+      return;
+    }
 
     try {
       // **FIX:** Convert the audio blob into the format the model expects.
       // 1. Read the blob as an ArrayBuffer.
+      console.log("[Transcription] Converting blob to ArrayBuffer...");
       const arrayBuffer = await blob.arrayBuffer();
+      console.log("[Transcription] ArrayBuffer size:", arrayBuffer.byteLength, "bytes");
 
       // 2. Create an AudioContext to decode and resample the audio.
       //    The Whisper model expects a 16000Hz sample rate.
+      console.log("[Transcription] Creating AudioContext with 16000Hz sample rate...");
       const audioContext = new AudioContext({
         sampleRate: 16000,
       });
 
       // 3. Decode the audio data from the ArrayBuffer.
+      console.log("[Transcription] Decoding audio data...");
       const decodedAudio = await audioContext.decodeAudioData(arrayBuffer);
+      console.log("[Transcription] Audio decoded. Duration:", decodedAudio.duration, "seconds");
 
       // 4. Get the raw audio data (Float32Array) from the first channel.
       const audio = decodedAudio.getChannelData(0);
+      console.log("[Transcription] Extracted audio channel, length:", audio.length);
 
       const prompt = `Capture physical therapy exercises, sets, and reps. For example: theraband external rotation four sets twelve reps. kettle bell squats three sets ten reps. active assistive extension three sets fifteen reps.`;
       const commonOptions = {
@@ -156,13 +179,18 @@ export default function AudioTranscriber() {
       };
 
       // 5. Pass the processed audio data to the pipeline.
+      console.log("[Transcription] Calling pipeline with audio data...");
       const output = await transcriberRef.current(audio, commonOptions);
+      console.log("[Transcription] Pipeline result:", output);
 
       if (output && output.text) {
+        console.log("[Transcription] Transcription text received:", output.text);
         setTranscription(output.text);
+      } else {
+        console.warn("[Transcription] Pipeline output missing or no text:", output);
       }
     } catch (error) {
-      console.error("Transcription error:", error);
+      console.error("[Transcription] Error:", error);
     }
   };
 
