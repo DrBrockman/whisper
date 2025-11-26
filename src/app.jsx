@@ -40,7 +40,10 @@ export default function AudioTranscriber() {
       switch (status) {
         case "initiate":
           // model file loading started
-          console.log("[App] Worker initiating model load:", msg.file || msg.model);
+          console.log(
+            "[App] Worker initiating model load:",
+            msg.file || msg.model
+          );
           break;
         case "progress":
           // progress updates forwarded from the worker/pipeline
@@ -82,7 +85,10 @@ export default function AudioTranscriber() {
           break;
         case "error":
           console.error("[App] Worker error:", msg.data || msg.error || msg);
-          setTranscription("Transcription failed: " + (msg?.data?.message || msg.error || "Unknown error"));
+          setTranscription(
+            "Transcription failed: " +
+              (msg?.data?.message || msg.error || "Unknown error")
+          );
           pendingTranscriptionRef.current.delete(messageId);
           setStatus("ready");
           break;
@@ -95,7 +101,34 @@ export default function AudioTranscriber() {
     };
 
     worker.addEventListener("message", handleWorkerMessage);
-    return () => worker.removeEventListener("message", handleWorkerMessage);
+
+    // Ping the worker to ensure it's alive and responsive
+    const pingId = "ping-" + Date.now();
+    const pingTimeout = setTimeout(() => {
+      console.warn("[App] Worker did not reply to ping within 5s. Worker may be busy or failed to initialize.");
+    }, 5000);
+
+    // Store timeout ref so handler can clear it on pong
+    const onPong = (evt) => {
+      const m = evt.data || {};
+      if (m.status === "pong") {
+        console.log("[App] Worker pong received", m);
+        clearTimeout(pingTimeout);
+        worker.removeEventListener("message", onPong);
+      }
+    };
+
+    worker.addEventListener("message", onPong);
+    try {
+      worker.postMessage({ cmd: "ping", messageId: pingId });
+    } catch (e) {
+      console.error("[App] Failed to send ping to worker:", e);
+    }
+
+    return () => {
+      worker.removeEventListener("message", handleWorkerMessage);
+      worker.removeEventListener("message", onPong);
+    };
   }, []);
 
   // --- Helper: resample audio to target sample rate (linear interpolation) ---
@@ -117,7 +150,8 @@ export default function AudioTranscriber() {
       const fraction = sourceIndex - index;
 
       if (index + 1 < sourceData.length) {
-        result[i] = sourceData[index] * (1 - fraction) + sourceData[index + 1] * fraction;
+        result[i] =
+          sourceData[index] * (1 - fraction) + sourceData[index + 1] * fraction;
       } else {
         result[i] = sourceData[index];
       }
@@ -219,9 +253,15 @@ export default function AudioTranscriber() {
     try {
       // Convert blob -> ArrayBuffer -> AudioBuffer -> Float32Array (mono)
       const arrayBuffer = await audioBlob.arrayBuffer();
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const audioContext = new (window.AudioContext ||
+        window.webkitAudioContext)();
       const decoded = await audioContext.decodeAudioData(arrayBuffer);
-      console.log("[App] Decoded audio. Duration:", decoded.duration, "s, sampleRate:", decoded.sampleRate);
+      console.log(
+        "[App] Decoded audio. Duration:",
+        decoded.duration,
+        "s, sampleRate:",
+        decoded.sampleRate
+      );
 
       // Resample to 16kHz for Whisper
       const float32 = resampleAudio(decoded, 16000);
@@ -247,7 +287,10 @@ export default function AudioTranscriber() {
 
       // Track pending so we can cleanup if needed
       pendingTranscriptionRef.current.set(messageId, { sent: true });
-      console.log("[App] Message sent to worker (transferable). messageId:", messageId);
+      console.log(
+        "[App] Message sent to worker (transferable). messageId:",
+        messageId
+      );
     } catch (error) {
       console.error("[App] Transcription setup error:", error);
       setTranscription("Error: " + error.message);

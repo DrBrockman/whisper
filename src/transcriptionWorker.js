@@ -15,9 +15,16 @@ let transcriber = null;
 let currentModel = null;
 let currentQuantized = null;
 
-async function createOrGetPipeline(modelId = "Xenova/whisper-tiny.en", progress_callback = null, quantized = false) {
+async function createOrGetPipeline(
+  modelId = "Xenova/whisper-tiny.en",
+  progress_callback = null,
+  quantized = false
+) {
   // If model/quantized changed, dispose old instance
-  if (transcriber && (currentModel !== modelId || currentQuantized !== quantized)) {
+  if (
+    transcriber &&
+    (currentModel !== modelId || currentQuantized !== quantized)
+  ) {
     try {
       transcriber.dispose();
     } catch (e) {
@@ -30,24 +37,29 @@ async function createOrGetPipeline(modelId = "Xenova/whisper-tiny.en", progress_
     currentModel = modelId;
     currentQuantized = quantized;
     self.postMessage({ status: "initiate", file: modelId });
-    transcriber = await pipeline("automatic-speech-recognition", modelId, {
-      quantized,
-      progress_callback: (data) => {
-        // Forward progress messages from the pipeline to main thread
-        // The pipeline may send {status: 'progress', progress, file, loaded, total, name}
-        if (data && data.status === "progress") {
-          self.postMessage({ status: "progress", ...data });
-        } else if (data && data.status === "initiate") {
-          self.postMessage({ status: "initiate", ...data });
-        } else if (data && data.status === "done") {
-          self.postMessage({ status: "done", ...data });
-        } else {
-          // Generic forward
-          self.postMessage(data);
-        }
-      },
-    });
-    self.postMessage({ status: "ready", model: modelId });
+    try {
+      transcriber = await pipeline("automatic-speech-recognition", modelId, {
+        quantized,
+        progress_callback: (data) => {
+          // Forward progress messages from the pipeline to main thread
+          if (data && data.status === "progress") {
+            self.postMessage({ status: "progress", ...data });
+          } else if (data && data.status === "initiate") {
+            self.postMessage({ status: "initiate", ...data });
+          } else if (data && data.status === "done") {
+            self.postMessage({ status: "done", ...data });
+          } else {
+            // Generic forward
+            self.postMessage(data);
+          }
+        },
+      });
+      self.postMessage({ status: "ready", model: modelId });
+    } catch (e) {
+      console.error("[Worker] Pipeline initialization error:", e);
+      self.postMessage({ status: "error", data: { message: "Pipeline init failed: " + e.message } });
+      throw e;
+    }
   }
 
   return transcriber;
@@ -84,7 +96,11 @@ function createChunkManager(transcriber) {
       last.tokens = [...(item[0]?.output_token_ids || last.tokens)];
 
       // Try to decode progressive tokens to text using tokenizer if available
-      if (transcriber && transcriber.tokenizer && typeof transcriber.tokenizer._decode_asr === "function") {
+      if (
+        transcriber &&
+        transcriber.tokenizer &&
+        typeof transcriber.tokenizer._decode_asr === "function"
+      ) {
         const data = transcriber.tokenizer._decode_asr(chunks_to_process, {
           time_precision,
           return_timestamps: true,
@@ -98,7 +114,13 @@ function createChunkManager(transcriber) {
       // Fallback: try to extract any text from `item`
       const fallbackText = item[0]?.text || item[0]?.generated_text || null;
       if (fallbackText) {
-        self.postMessage({ status: "update", data: [fallbackText, { chunks: [{ text: fallbackText, timestamp: [null, null] }] }] });
+        self.postMessage({
+          status: "update",
+          data: [
+            fallbackText,
+            { chunks: [{ text: fallbackText, timestamp: [null, null] }] },
+          ],
+        });
       }
     } catch (e) {
       console.warn("[Worker] callback_function error:", e);
@@ -118,10 +140,21 @@ self.addEventListener("message", async (event) => {
     const quantized = !!msg.quantized;
 
     // Ensure pipeline exists
-    const pipelineInstance = await createOrGetPipeline(modelId, null, quantized);
+    const pipelineInstance = await createOrGetPipeline(
+      modelId,
+      null,
+      quantized
+    );
 
     // Prepare chunk manager for incremental updates
-    const { chunk_callback, callback_function } = createChunkManager(pipelineInstance);
+    const { chunk_callback, callback_function } =
+      createChunkManager(pipelineInstance);
+
+    // Handle simple ping/pong healthcheck
+    if (msg.cmd === "ping") {
+      self.postMessage({ status: "pong", messageId });
+      return;
+    }
 
     // Determine audio input form
     let audioInput = null;
@@ -162,6 +195,10 @@ self.addEventListener("message", async (event) => {
     self.postMessage({ status: "complete", messageId, data: output });
   } catch (err) {
     console.error("[Worker] Fatal error:", err);
-    self.postMessage({ status: "error", messageId, data: { message: err.message } });
+    self.postMessage({
+      status: "error",
+      messageId,
+      data: { message: err.message },
+    });
   }
 });
