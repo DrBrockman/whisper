@@ -11,29 +11,6 @@ const getTranscriptionWorker = () => {
       { type: "module" }
     );
   }
-
-  // Convert an audio Blob to a Float32Array resampled to 16k using OfflineAudioContext
-  async function convertAudioToFloat32(audioBlob) {
-    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    const arrayBuffer = await audioBlob.arrayBuffer();
-    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-
-    // We need to resample to 16000Hz for Whisper
-    const targetSampleRate = 16000;
-    const offlineCtx = new OfflineAudioContext(1, Math.ceil(audioBuffer.duration * targetSampleRate), targetSampleRate);
-
-    // Create a buffer source for the offline context
-    const source = offlineCtx.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(offlineCtx.destination);
-    source.start();
-
-    // Render the audio at 16k
-    const resampledBuffer = await offlineCtx.startRendering();
-
-    // Return the Float32Array data from the first channel
-    return resampledBuffer.getChannelData(0);
-  }
   return transcriptionWorker;
 };
 
@@ -226,6 +203,29 @@ export default function AudioTranscriber() {
     for (let i = 0; i < string.length; i++) {
       view.setUint8(offset + i, string.charCodeAt(i));
     }
+  }
+
+  // --- Helper: convert audio blob to Float32Array resampled to 16k using OfflineAudioContext ---
+  async function convertAudioToFloat32(audioBlob) {
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const arrayBuffer = await audioBlob.arrayBuffer();
+    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+    // We need to resample to 16000Hz for Whisper
+    const targetSampleRate = 16000;
+    const offlineCtx = new OfflineAudioContext(1, Math.ceil(audioBuffer.duration * targetSampleRate), targetSampleRate);
+
+    // Create a buffer source for the offline context
+    const source = offlineCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(offlineCtx.destination);
+    source.start();
+
+    // Render the audio at 16k
+    const resampledBuffer = await offlineCtx.startRendering();
+
+    // Return the Float32Array data from the first channel
+    return resampledBuffer.getChannelData(0);
   }
 
   // --- 2. Recording Logic ---
