@@ -164,47 +164,62 @@ export default function AudioTranscriber() {
       };
 
       let output;
+      let audioToProcess;
 
-      // Try 1: Pass the blob directly
+      // Always convert blob to Float32Array for consistent processing
       try {
-        console.log("[Transcription] Attempt 1: Passing blob directly to pipeline...");
-        output = await transcriberRef.current(blob, commonOptions);
-        console.log("[Transcription] Attempt 1 succeeded. Result:", output);
-      } catch (err1) {
-        console.warn("[Transcription] Attempt 1 failed:", err1.message);
+        console.log("[Transcription] Converting blob to audio via AudioContext...");
+        const arrayBuffer = await blob.arrayBuffer();
+        console.log("[Transcription] ArrayBuffer size:", arrayBuffer.byteLength, "bytes");
 
-        // Try 2: Convert blob to ArrayBuffer and use AudioContext
-        try {
-          console.log("[Transcription] Attempt 2: Converting blob to audio data via AudioContext...");
-          const arrayBuffer = await blob.arrayBuffer();
-          console.log("[Transcription] ArrayBuffer size:", arrayBuffer.byteLength, "bytes");
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const decodedAudio = await audioContext.decodeAudioData(arrayBuffer);
+        console.log("[Transcription] Audio decoded. Duration:", decodedAudio.duration, "seconds. Sample rate:", decodedAudio.sampleRate);
 
-          const audioContext = new AudioContext({
-            sampleRate: 16000,
-          });
+        // Get the audio channel and check for silence
+        audioToProcess = decodedAudio.getChannelData(0);
+        console.log("[Transcription] Extracted audio channel, length:", audioToProcess.length);
 
-          const decodedAudio = await audioContext.decodeAudioData(arrayBuffer);
-          console.log("[Transcription] Audio decoded. Duration:", decodedAudio.duration, "seconds");
-
-          const audio = decodedAudio.getChannelData(0);
-          console.log("[Transcription] Extracted audio channel, length:", audio.length);
-
-          output = await transcriberRef.current(audio, commonOptions);
-          console.log("[Transcription] Attempt 2 succeeded. Result:", output);
-        } catch (err2) {
-          console.error("[Transcription] Attempt 2 also failed:", err2.message);
-          throw err2;
+        // Calculate RMS (Root Mean Square) to detect if audio has content
+        let sum = 0;
+        for (let i = 0; i < audioToProcess.length; i++) {
+          sum += audioToProcess[i] * audioToProcess[i];
         }
+        const rms = Math.sqrt(sum / audioToProcess.length);
+        console.log("[Transcription] Audio RMS (energy level):", rms.toFixed(6), "(>0.01 indicates speech)");
+
+        if (rms < 0.001) {
+          console.warn("[Transcription] Audio appears to be silent (RMS too low). Result will likely be empty.");
+        }
+      } catch (err) {
+        console.warn("[Transcription] AudioContext conversion failed:", err.message);
+        console.log("[Transcription] Falling back to blob pass-through...");
+        audioToProcess = blob;
       }
 
-      if (output && output.text) {
+      try {
+        console.log("[Transcription] Calling pipeline with audio...");
+        output = await transcriberRef.current(audioToProcess, commonOptions);
+        console.log("[Transcription] Pipeline call succeeded. Result:", output);
+      } catch (err) {
+        console.error("[Transcription] Pipeline call failed:", err.message);
+        throw err;
+      }
+
+      if (output && output.text && output.text.trim().length > 0) {
         console.log("[Transcription] Transcription text received:", output.text);
         setTranscription(output.text);
+      } else if (output && output.text === "") {
+        console.warn("[Transcription] Pipeline returned empty text. Audio may be silent or inaudible.");
+        setTranscription("");
+        setStatus("ready");
       } else {
-        console.warn("[Transcription] Pipeline output missing or no text:", output);
+        console.warn("[Transcription] Pipeline output missing or invalid:", output);
+        setStatus("ready");
       }
     } catch (error) {
       console.error("[Transcription] Fatal error:", error);
+      setStatus("ready");
     }
   };
 
