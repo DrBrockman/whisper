@@ -4,12 +4,38 @@ import { pipeline, env } from "@xenova/transformers";
 // Configuration
 env.allowLocalModels = false;
 env.useBrowserCache = true;
+const PT_VOCABULARY = `
+  theraband, kettle bell, cable, machine, active assistive, AAROM, 
+  flexion, extension, abduction, adduction, internal rotation, external rotation, 
+  dorsiflexion, plantarflexion, supine, prone, side-lying, reps, sets, 
+  tibial, femoral, patella, quadriceps, hamstrings, gluteus maximus, 
+  distal, proximal, medial, lateral.
+`;
+
+const MODELS = [
+  {
+    id: "whisper-tiny",
+    name: "Whisper Tiny (Fast)",
+    modelId: "Xenova/whisper-tiny.en",
+  },
+  {
+    id: "medical-v1",
+    name: "Medical v1 (Specialized)",
+    modelId: "Crystalcareai/Whisper-Medicalv1",
+  },
+  {
+    id: "lite-large",
+    name: "Lite Whisper Large v3 (Accurate)",
+    modelId: "onnx-community/lite-whisper-large-v3-turbo-fast-ONNX",
+  },
+];
 
 export default function AudioTranscriber() {
   // --- State ---
   const [status, setStatus] = useState(null); // 'loading', 'ready', 'recording', 'processing'
   const [transcription, setTranscription] = useState("");
   const [progress, setProgress] = useState(0);
+  const [selectedModel, setSelectedModel] = useState("whisper-tiny");
 
   // --- Refs ---
   const transcriberRef = useRef(null);
@@ -18,17 +44,20 @@ export default function AudioTranscriber() {
   const isBusyRef = useRef(false); // Prevents overlapping processing
   const intervalRef = useRef(null); // Timer for periodic updates
   const streamRef = useRef(null); // Keep track of the stream to close it properly
+  const pointerActiveRef = useRef(false); // track press-and-hold state
 
   // --- 1. Load Model ---
   useEffect(() => {
     const loadModel = async () => {
       setStatus("loading");
       try {
-        // "whisper-tiny.en" is fast and decent for English.
-        // For multi-lingual, use "Xenova/whisper-tiny"
+        // Find the selected model
+        const model = MODELS.find((m) => m.id === selectedModel);
+        const modelId = model ? model.modelId : "Xenova/whisper-tiny.en";
+
         transcriberRef.current = await pipeline(
           "automatic-speech-recognition",
-          "Xenova/whisper-tiny.en",
+          modelId,
           {
             progress_callback: (data) => {
               if (data.status === "progress") {
@@ -52,7 +81,7 @@ export default function AudioTranscriber() {
         streamRef.current.getTracks().forEach((track) => track.stop());
       }
     };
-  }, []);
+  }, [selectedModel]);
 
   // --- 2. Recording Logic ---
   const startRecording = async () => {
@@ -125,6 +154,7 @@ export default function AudioTranscriber() {
         language: "english",
         task: "transcribe",
         return_timestamps: false, // Set true if you want word timings
+        initial_prompt: `The following is a physical therapy documentation session. Terminology: ${PT_VOCABULARY}`,
       });
 
       // Update the text with the latest result.
@@ -148,18 +178,75 @@ export default function AudioTranscriber() {
     // Optional: Add a toast notification here
   };
 
+  // Press-and-hold handlers: start on pointerdown, stop on pointerup.
+  const handlePointerDown = (e) => {
+    // Ignore secondary buttons and when model is loading/processing
+    if (e.button && e.button !== 0) return;
+    if (status === "loading" || status === "processing") return;
+    e.preventDefault();
+    pointerActiveRef.current = true;
+    // Start recording
+    startRecording();
+    // Ensure we stop if pointer is released anywhere
+    window.addEventListener("pointerup", handlePointerUp);
+  };
+
+  const handlePointerUp = (e) => {
+    if (!pointerActiveRef.current) return;
+    pointerActiveRef.current = false;
+    stopRecording();
+    window.removeEventListener("pointerup", handlePointerUp);
+  };
+
+  // Keyboard support: Space or Enter to hold-record (keydown -> start, keyup -> stop)
+  const handleKeyDown = (e) => {
+    if (e.key === " " || e.key === "Spacebar" || e.key === "Enter") {
+      if (pointerActiveRef.current) return;
+      e.preventDefault();
+      pointerActiveRef.current = true;
+      startRecording();
+      window.addEventListener("keyup", handleKeyUp);
+    }
+  };
+
+  const handleKeyUp = (e) => {
+    if (e.key === " " || e.key === "Spacebar" || e.key === "Enter") {
+      if (!pointerActiveRef.current) return;
+      pointerActiveRef.current = false;
+      stopRecording();
+      window.removeEventListener("keyup", handleKeyUp);
+    }
+  };
+
   return (
     <div className="app-container">
       <div className="card">
         {/* Header */}
         <header className="header">
-          <div className="header-content">
-            <h1>Whisper Live</h1>
-            <p>In-browser, real-time speech recognition</p>
-          </div>
-          <div className={`status-badge ${status}`}>
-            <span className="dot"></span>
-            {status === "loading" ? `Loading Model (${progress}%)` : status}
+          <div className="header-content"></div>
+
+          <div className="header-controls">
+            <div className="model-selector">
+              <label htmlFor="model-select">Model:</label>
+              <select
+                id="model-select"
+                value={selectedModel}
+                onChange={(e) => setSelectedModel(e.target.value)}
+                disabled={status === "recording" || status === "processing"}
+                className="select-input"
+              >
+                {MODELS.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className={`status-badge ${status}`}>
+              <span className="dot"></span>
+              {status === "loading" ? `Loading Model (${progress}%)` : status}
+            </div>
           </div>
         </header>
 
@@ -188,19 +275,24 @@ export default function AudioTranscriber() {
 
         {/* Controls */}
         <div className="controls">
-          {status === "recording" ? (
-            <button className="btn stop-btn" onClick={stopRecording}>
-              <StopIcon /> Stop
-            </button>
-          ) : (
-            <button
-              className="btn record-btn"
-              onClick={startRecording}
-              disabled={status === "loading" || status === "processing"}
-            >
-              <MicIcon /> {status === "loading" ? "Loading..." : "Record"}
-            </button>
-          )}
+          <button
+            className="btn record-btn"
+            onPointerDown={handlePointerDown}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
+            onKeyDown={handleKeyDown}
+            onKeyUp={handleKeyUp}
+            disabled={status === "loading" || status === "processing"}
+            aria-pressed={status === "recording"}
+            title="Press and hold to record (release to stop)"
+          >
+            <MicIcon />
+            {status === "recording"
+              ? "Recording..."
+              : status === "loading"
+              ? "Loading..."
+              : "Hold to Record"}
+          </button>
 
           <div className="secondary-actions">
             <button
