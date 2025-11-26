@@ -100,7 +100,8 @@ export default function AudioTranscriber() {
         }
       };
 
-      mediaRecorderRef.current.start();
+  // Start with 1s timeslice so ondataavailable fires regularly for realtime updates
+  mediaRecorderRef.current.start(1000);
       setStatus("recording");
 
       // REAL-TIME LOGIC:
@@ -115,9 +116,14 @@ export default function AudioTranscriber() {
   };
 
   const stopRecording = async () => {
-    if (mediaRecorderRef.current && status === "recording") {
+    // Proceed to stop if recorder exists and is not already inactive.
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       clearInterval(intervalRef.current); // Stop the periodic updates
-      mediaRecorderRef.current.stop();
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (err) {
+        // Ignore if already stopped
+      }
       setStatus("processing");
 
       // Stop the microphone

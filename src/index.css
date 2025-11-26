@@ -251,6 +251,13 @@ h1 {
   box-sizing: border-box;
 }
 
+.btn, .btn * {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+
 .record-btn {
   width: 100%;
   background: var(--primary);
@@ -263,6 +270,11 @@ h1 {
 .record-btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* Prevent touch-driven text selection and scrolling while holding */
+.record-btn {
+  touch-action: none;
 }
 
 .stop-btn {
