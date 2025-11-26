@@ -45,31 +45,56 @@ export default function AudioTranscriber() {
   const intervalRef = useRef(null); // Timer for periodic updates
   const streamRef = useRef(null); // Keep track of the stream to close it properly
   const pointerActiveRef = useRef(false); // track press-and-hold state
+  const loadTokenRef = useRef(0); // prevent race when switching models
 
   // --- 1. Load Model ---
   useEffect(() => {
     const loadModel = async () => {
+      // increment token to mark this load; other pending loads will be ignored
+      const myToken = ++loadTokenRef.current;
       setStatus("loading");
+      setProgress(0);
+      // Clear the current transcriber while loading the new one so realtime
+      // processing won't accidentally call an old model.
+      transcriberRef.current = null;
+
       try {
         // Find the selected model
         const model = MODELS.find((m) => m.id === selectedModel);
         const modelId = model ? model.modelId : "Xenova/whisper-tiny.en";
 
-        transcriberRef.current = await pipeline(
+        // Provide a progress callback that ignores updates from stale loads
+        const progress_callback = (data) => {
+          if (loadTokenRef.current !== myToken) return;
+          if (data.status === "progress") {
+            setProgress(Math.round(data.progress));
+          }
+        };
+
+        const pipelineInstance = await pipeline(
           "automatic-speech-recognition",
           modelId,
-          {
-            progress_callback: (data) => {
-              if (data.status === "progress") {
-                setProgress(Math.round(data.progress));
-              }
-            },
-          }
+          { progress_callback }
         );
-        setStatus("ready");
+
+        // Only apply if this load is still the latest requested
+        if (loadTokenRef.current === myToken) {
+          transcriberRef.current = pipelineInstance;
+          setStatus("ready");
+        } else {
+          // stale load: dispose if possible (best-effort)
+          try {
+            if (pipelineInstance && pipelineInstance.destroy) pipelineInstance.destroy();
+          } catch (e) {
+            // ignore
+          }
+        }
       } catch (err) {
-        console.error(err);
-        setStatus("error");
+        // Only set error if this is the active load
+        if (loadTokenRef.current === myToken) {
+          console.error(err);
+          setStatus("error");
+        }
       }
     };
     loadModel();
@@ -100,8 +125,8 @@ export default function AudioTranscriber() {
         }
       };
 
-  // Start with 1s timeslice so ondataavailable fires regularly for realtime updates
-  mediaRecorderRef.current.start(1000);
+      // Start with 1s timeslice so ondataavailable fires regularly for realtime updates
+      mediaRecorderRef.current.start(1000);
       setStatus("recording");
 
       // REAL-TIME LOGIC:
@@ -117,7 +142,10 @@ export default function AudioTranscriber() {
 
   const stopRecording = async () => {
     // Proceed to stop if recorder exists and is not already inactive.
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+    if (
+      mediaRecorderRef.current &&
+      mediaRecorderRef.current.state !== "inactive"
+    ) {
       clearInterval(intervalRef.current); // Stop the periodic updates
       try {
         mediaRecorderRef.current.stop();
