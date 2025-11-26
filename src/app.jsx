@@ -200,6 +200,7 @@ export default function AudioTranscriber() {
     );
     if (!transcriberRef.current) {
       console.error("[Transcription] No transcriberRef.current available!");
+      setTranscription("(Model not loaded)");
       return;
     }
 
@@ -216,13 +217,32 @@ export default function AudioTranscriber() {
 
       const audioContext = new (window.AudioContext ||
         window.webkitAudioContext)();
-      const decodedAudio = await audioContext.decodeAudioData(arrayBuffer);
-      console.log(
-        "[Transcription] Audio decoded. Duration:",
-        decodedAudio.duration,
-        "seconds. Sample rate:",
-        decodedAudio.sampleRate
-      );
+      let decodedAudio;
+
+      try {
+        decodedAudio = await audioContext.decodeAudioData(arrayBuffer);
+        console.log(
+          "[Transcription] Audio decoded. Duration:",
+          decodedAudio.duration,
+          "seconds. Sample rate:",
+          decodedAudio.sampleRate
+        );
+      } catch (decodeError) {
+        console.error("[Transcription] Audio decode error:", decodeError);
+        setTranscription("(Audio format not supported)");
+        return;
+      }
+
+      // Check if audio is too short
+      if (decodedAudio.duration < 0.1) {
+        console.warn(
+          "[Transcription] Audio too short:",
+          decodedAudio.duration,
+          "seconds"
+        );
+        setTranscription("(Recording too short - hold longer)");
+        return;
+      }
 
       // Resample to 16kHz (required by Whisper)
       const resampledAudio = resampleAudio(decodedAudio, 16000);
@@ -247,28 +267,46 @@ export default function AudioTranscriber() {
         console.warn(
           "[Transcription] Audio appears to be silent (RMS too low)."
         );
-        setTranscription("(No audio detected)");
+        setTranscription("(No audio detected - check microphone)");
         return;
       }
 
       const prompt = `Capture physical therapy exercises, sets, and reps. For example: theraband external rotation four sets twelve reps. kettle bell squats three sets ten reps. active assistive extension three sets fifteen reps.`;
 
       console.log("[Transcription] Calling pipeline with resampled audio...");
-      const output = await transcriberRef.current(resampledAudio, {
-        chunk_length_s: 30,
-        stride_length_s: 5,
-        language: "english",
-        task: "transcribe",
-        return_timestamps: false,
-        initial_prompt: prompt,
-      });
+      console.log("[Transcription] Audio data type:", typeof resampledAudio);
+      console.log(
+        "[Transcription] Audio is Float32Array:",
+        resampledAudio instanceof Float32Array
+      );
+      console.log(
+        "[Transcription] First 10 samples:",
+        Array.from(resampledAudio.slice(0, 10))
+      );
+
+      let output;
+      try {
+        output = await transcriberRef.current(resampledAudio, {
+          chunk_length_s: 30,
+          stride_length_s: 5,
+          language: "english",
+          task: "transcribe",
+          return_timestamps: false,
+          initial_prompt: prompt,
+        });
+      } catch (pipelineError) {
+        console.error("[Transcription] Pipeline error:", pipelineError);
+        console.error("[Transcription] Error stack:", pipelineError.stack);
+        setTranscription("(Pipeline error: " + pipelineError.message + ")");
+        return;
+      }
 
       console.log(
         "[Transcription] Pipeline call succeeded. Full output:",
-        output
+        JSON.stringify(output, null, 2)
       );
 
-      if (output && output.text) {
+      if (output && typeof output.text !== "undefined") {
         const text = output.text.trim();
         console.log("[Transcription] Transcription text received:", text);
 
@@ -280,13 +318,14 @@ export default function AudioTranscriber() {
         }
       } else {
         console.warn(
-          "[Transcription] Pipeline output missing text field:",
+          "[Transcription] Pipeline output missing text field. Output:",
           output
         );
-        setTranscription("(Transcription failed)");
+        setTranscription("(Unexpected output format)");
       }
     } catch (error) {
       console.error("[Transcription] Fatal error:", error);
+      console.error("[Transcription] Error stack:", error.stack);
       setTranscription("(Error: " + error.message + ")");
     }
   };
