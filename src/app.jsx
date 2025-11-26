@@ -29,24 +29,68 @@ export default function AudioTranscriber() {
     const worker = getTranscriptionWorker();
 
     const handleWorkerMessage = (event) => {
-      const { type, messageId, text, error, progress } = event.data;
+      const msg = event.data || {};
+      // Log entire worker message for easier debugging
+      console.log("[App] Worker message:", msg);
 
-      if (type === "complete") {
-        console.log("[App] Transcription complete from worker");
-        if (text && text.trim().length > 0) {
-          setTranscription(text);
-        } else {
-          setTranscription("No speech detected.");
-        }
-        pendingTranscriptionRef.current.delete(messageId);
-        setStatus("ready");
-      } else if (type === "error") {
-        console.error("[App] Worker error:", error);
-        setTranscription("Transcription failed: " + error);
-        pendingTranscriptionRef.current.delete(messageId);
-        setStatus("ready");
-      } else if (type === "progress") {
-        console.log("[App] Transcription progress:", progress);
+      // Support both `type` (older) and `status` (worker) fields
+      const status = msg.status || msg.type || null;
+      const messageId = msg.messageId || msg.id || null;
+
+      switch (status) {
+        case "initiate":
+          // model file loading started
+          console.log("[App] Worker initiating model load:", msg.file || msg.model);
+          break;
+        case "progress":
+          // progress updates forwarded from the worker/pipeline
+          console.log("[App] Worker progress:", msg);
+          break;
+        case "ready":
+          console.log("[App] Worker ready for transcription", msg.model || "");
+          break;
+        case "update":
+          // partial transcript update
+          try {
+            const data = msg.data;
+            if (data) {
+              // data may be [text, { chunks }]
+              const text = Array.isArray(data) ? data[0] : data.text || "";
+              setTranscription(text);
+            }
+          } catch (e) {
+            console.warn("[App] Failed to handle update message", e);
+          }
+          break;
+        case "complete":
+          // final result
+          console.log("[App] Transcription complete from worker", msg);
+          try {
+            const out = msg.data || msg;
+            const text = out?.text || out?.data?.text || msg.text || "";
+            if (text && String(text).trim().length > 0) {
+              setTranscription(String(text));
+            } else {
+              setTranscription("No speech detected.");
+            }
+          } catch (e) {
+            console.error("[App] Error parsing complete message", e);
+            setTranscription("Transcription complete (no text)");
+          }
+          pendingTranscriptionRef.current.delete(messageId);
+          setStatus("ready");
+          break;
+        case "error":
+          console.error("[App] Worker error:", msg.data || msg.error || msg);
+          setTranscription("Transcription failed: " + (msg?.data?.message || msg.error || "Unknown error"));
+          pendingTranscriptionRef.current.delete(messageId);
+          setStatus("ready");
+          break;
+        default:
+          // Unknown or auxiliary message; just log
+          // e.g., pipeline progress objects
+          // console.log('[App] Worker message (unhandled):', msg);
+          break;
       }
     };
 
