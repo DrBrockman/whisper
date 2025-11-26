@@ -16,7 +16,7 @@ const MODELS = [
 
 export default function AudioTranscriber() {
   // --- State ---
-  const [status, setStatus] = useState(null); // 'loading', 'ready', 'recording', 'processing', 'error'
+  const [status, setStatus] = useState("loading"); // 'loading', 'ready', 'recording', 'processing', 'error'
   const [transcription, setTranscription] = useState("");
   const [progress, setProgress] = useState(0);
   const [selectedModel, setSelectedModel] = useState("whisper-tiny");
@@ -24,26 +24,21 @@ export default function AudioTranscriber() {
   // --- Refs ---
   const transcriberRef = useRef(null);
   const mediaRecorderRef = useRef(null);
-  const audioChunksRef = useRef([]); // Stores the raw audio data
-  const isBusyRef = useRef(false); // Prevents overlapping processing
-  const intervalRef = useRef(null); // Timer for periodic updates
-  const streamRef = useRef(null); // Keep track of the stream to close it properly
   const pointerActiveRef = useRef(false); // track press-and-hold state
   const loadTokenRef = useRef(0); // prevent race when switching models
 
   // --- 1. Load Model ---
   useEffect(() => {
     const loadModel = async () => {
-      // increment token to mark this load; other pending loads will be ignored
       const myToken = ++loadTokenRef.current;
       setStatus("loading");
       setProgress(0);
-      // Clear the current transcriber while loading the new one
       transcriberRef.current = null;
 
       try {
-        const model = MODELS.find((m) => m.id === selectedModel);
-        const modelId = model ? model.modelId : "Xenova/whisper-tiny.en";
+        const modelId =
+          MODELS.find((m) => m.id === selectedModel)?.modelId ||
+          "Xenova/whisper-tiny.en";
 
         const progress_callback = (data) => {
           if (loadTokenRef.current !== myToken) return;
@@ -64,91 +59,81 @@ export default function AudioTranscriber() {
         }
       } catch (err) {
         if (loadTokenRef.current === myToken) {
-          console.error(err);
+          console.error("Model loading error:", err);
           setStatus("error");
         }
       }
     };
     loadModel();
-
-    return () => {
-      // Cleanup on unmount
-      clearInterval(intervalRef.current);
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((track) => track.stop());
-      }
-    };
   }, [selectedModel]);
 
   // --- 2. Recording Logic ---
   const startRecording = async () => {
+    setStatus("recording");
+    setTranscription(""); // Clear previous transcription
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-      mediaRecorderRef.current = new MediaRecorder(stream);
 
-      audioChunksRef.current = [];
-      setTranscription("");
+      // **FIX APPLIED:** Create a new MediaRecorder instance for each recording session.
+      // This is more stable across browsers.
+      const recorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
 
-      mediaRecorderRef.current.ondataavailable = (e) => {
+      const audioChunks = [];
+
+      recorder.ondataavailable = (e) => {
         if (e.data.size > 0) {
-          audioChunksRef.current.push(e.data);
+          audioChunks.push(e.data);
         }
       };
 
-      // Start recording without timeslice (simpler, avoids partial audio issues)
-      mediaRecorderRef.current.start();
-      setStatus("recording");
+      // **FIX APPLIED:** All transcription logic is now safely inside the `onstop` handler.
+      // This guarantees that it runs *after* the final `ondataavailable` event.
+      recorder.onstop = async () => {
+        // Stop the microphone track to turn off the browser's recording indicator.
+        stream.getTracks().forEach((track) => track.stop());
+
+        if (audioChunks.length === 0) {
+          console.warn("No audio data recorded.");
+          setStatus("ready");
+          return;
+        }
+
+        setStatus("processing");
+
+        const recordedType = audioChunks[0].type || "audio/webm";
+        const blob = new Blob(audioChunks, { type: recordedType });
+
+        await transcribeAudio(blob);
+        setStatus("ready");
+      };
+
+      recorder.start();
     } catch (err) {
-      console.error(err);
+      console.error("Microphone access error:", err);
       alert("Microphone access denied or not supported.");
+      setStatus("ready");
     }
   };
 
-  const stopRecording = async () => {
+  const stopRecording = () => {
+    // If the recorder exists and is currently recording, stop it.
+    // This will trigger the `onstop` event handler where the transcription happens.
     if (
       mediaRecorderRef.current &&
-      mediaRecorderRef.current.state !== "inactive"
+      mediaRecorderRef.current.state === "recording"
     ) {
-      setStatus("processing");
-
-      mediaRecorderRef.current.onstop = async () => {
-        // Stop the microphone stream
-        if (streamRef.current) {
-          streamRef.current.getTracks().forEach((track) => track.stop());
-        }
-
-        // Transcribe the complete recording
-        await transcribeAudio();
-        setStatus("ready");
-
-        // Clean up the event listener
-        if (mediaRecorderRef.current) {
-          mediaRecorderRef.current.onstop = null;
-        }
-      };
-
-      // Stop the recorder, which will trigger the 'onstop' event
       mediaRecorderRef.current.stop();
     }
   };
 
   // --- 3. Transcription Logic ---
-  const transcribeAudio = async () => {
+  const transcribeAudio = async (blob) => {
     if (!transcriberRef.current) return;
-    if (audioChunksRef.current.length === 0) return;
-
-    isBusyRef.current = true;
 
     try {
-      const recordedType =
-        (audioChunksRef.current[0] && audioChunksRef.current[0].type) ||
-        (mediaRecorderRef.current && mediaRecorderRef.current.mimeType) ||
-        "audio/webm";
-      const blob = new Blob(audioChunksRef.current, { type: recordedType });
-
       const prompt = `Capture physical therapy exercises, sets, and reps. For example: theraband external rotation four sets twelve reps. kettle bell squats three sets ten reps. active assistive extension three sets fifteen reps.`;
-
       const commonOptions = {
         chunk_length_s: 30,
         stride_length_s: 5,
@@ -158,99 +143,54 @@ export default function AudioTranscriber() {
         initial_prompt: prompt,
       };
 
-      let output;
-      try {
-        output = await transcriberRef.current(blob, commonOptions);
-      } catch (err) {
-        const isEncodingError =
-          err && (err.name === "EncodingError" || /decode/i.test(err.message));
-        if (isEncodingError) {
-          try {
-            const arrayBuffer = await blob.arrayBuffer();
-            output = await transcriberRef.current(arrayBuffer, commonOptions);
-          } catch (err2) {
-            throw err; // rethrow original error if fallback fails
-          }
-        } else {
-          throw err;
-        }
-      }
+      // Use an ArrayBuffer as it's often more reliable.
+      const arrayBuffer = await blob.arrayBuffer();
+      const output = await transcriberRef.current(arrayBuffer, commonOptions);
 
       if (output && output.text) {
         setTranscription(output.text);
       }
     } catch (error) {
-      console.error("Transcription error", error);
-    } finally {
-      isBusyRef.current = false;
+      console.error("Transcription error:", error);
     }
   };
 
-  // --- 4. UI Helpers ---
+  // --- 4. UI Handlers ---
   const copyText = () => {
     navigator.clipboard.writeText(transcription);
   };
 
   const handlePointerDown = (e) => {
-    if (e.button && e.button !== 0) return;
-    if (status === "loading" || status === "processing" || status === "error")
-      return;
+    if (e.button !== 0 || status !== "ready") return;
     e.preventDefault();
     pointerActiveRef.current = true;
     startRecording();
-    window.addEventListener("pointerup", handlePointerUp, { once: true });
-    window.addEventListener("pointercancel", handlePointerUp, { once: true });
   };
 
   const handlePointerUp = () => {
-    if (pointerActiveRef.current) {
+    if (pointerActiveRef.current && status === "recording") {
       pointerActiveRef.current = false;
       stopRecording();
     }
   };
 
-  const handleKeyDown = (e) => {
-    if (e.key === " " || e.key === "Enter") {
-      if (pointerActiveRef.current) return;
-      e.preventDefault();
-      pointerActiveRef.current = true;
-      startRecording();
-      window.addEventListener("keyup", handleKeyUp, { once: true });
-    }
-  };
+  useEffect(() => {
+    // Add global event listeners for pointer up to handle cases where the user releases the mouse outside the button.
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
 
-  const handleKeyUp = (e) => {
-    if (e.key === " " || e.key === "Enter") {
-      if (pointerActiveRef.current) {
-        pointerActiveRef.current = false;
-        stopRecording();
-      }
-    }
-  };
+    return () => {
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+    };
+  }, [status]); // Re-bind if status changes to ensure we have the correct context.
 
   return (
     <div className="app-container">
       <div className="card">
-        {/* Header */}
         <header className="header">
           <div className="header-content"></div>
           <div className="header-controls">
-            <div className="model-selector">
-              <label htmlFor="model-select">Model:</label>
-              <select
-                id="model-select"
-                value={selectedModel}
-                onChange={(e) => setSelectedModel(e.target.value)}
-                disabled={status === "recording" || status === "processing"}
-                className="select-input"
-              >
-                {MODELS.map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {model.name}
-                  </option>
-                ))}
-              </select>
-            </div>
             <div className={`status-badge ${status}`}>
               <span className="dot"></span>
               {status === "loading" ? `Loading (${progress}%)` : status}
@@ -258,7 +198,6 @@ export default function AudioTranscriber() {
           </div>
         </header>
 
-        {/* Main Transcript Area */}
         <div className="transcript-area">
           {transcription ? (
             <p className="transcript-text">{transcription}</p>
@@ -266,6 +205,8 @@ export default function AudioTranscriber() {
             <div className="placeholder">
               {status === "loading"
                 ? "Initializing AI model..."
+                : status === "error"
+                ? "Error loading model. Please refresh."
                 : "Press and hold the button to start speaking."}
             </div>
           )}
@@ -279,13 +220,11 @@ export default function AudioTranscriber() {
           )}
         </div>
 
-        {/* Controls */}
         <div className="controls">
           <button
             className="btn record-btn"
             onPointerDown={handlePointerDown}
-            onKeyDown={handleKeyDown}
-            disabled={status === "loading" || status === "processing"}
+            disabled={status !== "ready"}
             aria-pressed={status === "recording"}
             title="Press and hold to record (release to stop)"
           >
