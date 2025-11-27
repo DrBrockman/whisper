@@ -37,9 +37,12 @@ export default function AudioTranscriber() {
             },
           }
         );
-        // Debug: print the pipeline object and its call signature / docstring
-        console.log("ASR pipeline instance:", transcriberRef.current);
-        console.log("call signature / doc:", transcriberRef.current?.__doc__ || transcriberRef.current?.toString());
+        console.log("here it"); // Debug: print the pipeline object and its call signature / docstring
+        console.log(
+          "ownProps:",
+          Object.getOwnPropertyNames(transcriberRef.current)
+        );
+        console.log("aint!!!");
         setStatus("ready");
       } catch (err) {
         console.error(err);
