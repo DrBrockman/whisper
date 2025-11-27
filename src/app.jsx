@@ -38,9 +38,27 @@ export default function AudioTranscriber() {
           }
         );
         console.log("here it"); // Debug: print the pipeline object and its call signature / docstring
+        console.log("ASR task:", transcriberRef.current?.task);
         console.log(
-          "ownProps:",
+          "Pipeline ownProps:",
           Object.getOwnPropertyNames(transcriberRef.current)
+        );
+        console.log(
+          "Model keys:",
+          Object.keys(transcriberRef.current?.model || {})
+        );
+        console.log("Model config:", transcriberRef.current?.model?.config);
+        console.log(
+          "Processor keys:",
+          Object.getOwnPropertyNames(transcriberRef.current?.processor || {})
+        );
+        console.log(
+          "Tokenizer keys:",
+          Object.getOwnPropertyNames(transcriberRef.current?.tokenizer || {})
+        );
+        console.log(
+          "Processor feature_extractor:",
+          transcriberRef.current?.processor?.feature_extractor
         );
         console.log("aint!!!");
         setStatus("ready");
